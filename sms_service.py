@@ -1,6 +1,8 @@
 import requests
 
-API_TOKEN = "0797ed1142469472ff06dd402a2006fde98c392f"
+import streamlit as st
+
+API_TOKEN = st.secrets["SMS_API_TOKEN"]
 
 def send_sms(phone_number, message):
 

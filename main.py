@@ -22,7 +22,6 @@ from database import (
     mark_missed,
     reset_alert,
     set_next_alarm,
-    get_next_alarm,
     get_patients,
     get_caregivers,
     assign_caregiver,
@@ -34,12 +33,24 @@ from database import (
     send_emergency,
     get_provider_emergencies,
     resolve_emergency,
+    get_caregiver_emergencies,
     log_sms,
+    calculate_today_adherence,
+    calculate_treatment_adherence,
     get_patient_caregiver,
     get_user_phone,
     get_caregiver_phone,
     get_provider_phone,
     generate_dose_schedule,
+    add_missed_log,
+    get_user_snoozes,
+    get_next_alarm,
+    create_missed_alert,
+    get_pending_missed_alerts,
+    acknowledge_missed_alert,
+    get_patient_emergency_alerts,
+    acknowledge_emergency,
+    calculate_adherence_summary
 
 )
 st.set_page_config(
@@ -354,15 +365,11 @@ def login_screen():
                             phone_number
                         )
 
-                        st.success(
-                            "Account created!"
-                        )
+                        st.success("Account created!")
 
-                    except:
+                    except Exception as e:
 
-                        st.error(
-                            "Username already exists"
-                        )
+                        st.error(str(e))
 
         else:
 
@@ -596,7 +603,10 @@ def dashboard():
 
         for log in logs:
 
-            if log[2] == str(date.today()):
+            if (
+                log[2] == str(date.today())
+                and log[3] in ["Taken", "Delayed"]
+            ):
                 today_logs.append((log[0], log[1]))
 
         # ==========================
@@ -605,17 +615,13 @@ def dashboard():
 
         total_doses = 0
 
-        completed = len(
-            [
-                log
-                for log in logs
-                if log[2] == str(date.today())
-                and log[3] in ["Taken", "Delayed"]
-            ]
-        )
+        completed = 0
 
         pending = 0
+
         missed = 0
+
+        upcoming = 0
 
         current_time = datetime.now()
 
@@ -656,22 +662,65 @@ def dashboard():
                 ]
 
             for dose_time, dose_datetime in dose_schedule:
-            
 
-                if dose_datetime.date() != date.today():
-                    continue
 
-                total_doses += 1
+                # TODAY'S DOSES
+                if dose_datetime.date() == date.today():
 
-                if (med, dose_time) in today_logs:
-                    continue
+                    total_doses += 1
 
-                if current_time > dose_datetime + timedelta(minutes=30):
-                    missed += 1
-                else:
-                    pending += 1
 
-        c1, c2, c3, c4 = st.columns(4)
+                    log_found = next(
+                        (
+                            l for l in logs
+                            if l[0] == med
+                            and l[1] == dose_time
+                            and l[2] == str(date.today())
+                        ),
+                        None
+                    )
+
+
+                    if log_found:
+
+
+                        if log_found[3] in [
+                            "Taken",
+                            "Delayed"
+                        ]:
+
+                            completed += 1
+
+
+                        elif log_found[3] in [
+                            "Missed",
+                            "Missed Reviewed"
+                        ]:
+
+                            missed += 1
+
+
+
+                    else:
+
+
+                        if current_time > dose_datetime + timedelta(minutes=30):
+
+                            missed += 1
+
+
+                        elif current_time >= dose_datetime:
+
+                            pending += 1
+
+
+
+                # FUTURE DOSES UNTIL END DATE
+                elif dose_datetime.date() > date.today():
+
+                    upcoming += 1
+
+        c1, c2, c3, c4, c5 = st.columns(5)
 
         with c1:
             st.metric("💊 Today's Doses", total_doses)
@@ -684,6 +733,13 @@ def dashboard():
 
         with c4:
             st.metric("❌ Missed", missed)
+
+        with c5:
+
+            st.metric(
+                "📅 Remaining Doses",
+                upcoming
+            )    
 
         st.divider()        
 
@@ -779,6 +835,36 @@ def dashboard():
                     st.caption("🏁 End")
                     st.write(end_date)
 
+
+                # ==========================
+                # Additional Medication Details
+                # ==========================
+
+                st.divider()
+
+                st.subheader("📋 Medication Information")
+
+
+                st.write(
+                    f"🎯 Purpose: {purpose if purpose else 'N/A'}"
+                )
+
+
+                st.write(
+                    f"💊 How to Take: {how_to_take if how_to_take else 'N/A'}"
+                )
+
+
+                st.write(
+                    f"⚠ Side Effects: {side_effects if side_effects else 'N/A'}"
+                )
+
+
+                st.write(
+                    f"🔔 Reminder Notes: {reminders if reminders else 'N/A'}"
+                )
+
+
                 st.divider()
 
                 st.subheader("🕒 Today's Medication")
@@ -835,21 +921,25 @@ def dashboard():
                         dose_time
                     )
 
+
+                    is_snoozed = next_alarm is not None
+
+
                     is_snoozed = next_alarm is not None
 
                     if log_found:
 
-                        if log_found[3] == "Taken":
+                        if log_found[3] in ["Taken", "Delayed"]:
 
                             status = "taken"
 
-                        elif log_found[3] == "Delayed":
+                        elif log_found[3] == "Missed":
 
-                            status = "taken"
+                            status = "missed"
 
                         else:
 
-                            status = "missed"
+                            status = "pending"
 
                     elif is_snoozed:
 
@@ -880,36 +970,11 @@ def dashboard():
                                 st.session_state.current_user
                             )
 
-                            if send_sms(
-                                patient_phone,
-                                f"You missed your {med} scheduled at {dose_time}."
-                            ):
-                                log_sms(
-                                    st.session_state.current_user,
-                                    med,
-                                    dose_time,
-                                    "MISSED"
-                                )
-
-                            if caregiver_phone:
+                            if patient_phone:
 
                                 if send_sms(
-                                    caregiver_phone,
-                                    f"{st.session_state.current_user} missed {med}."
-                                ):
-
-                                    log_sms(
-                                        st.session_state.current_user,
-                                        med,
-                                        dose_time,
-                                        "MISSED"
-                                    )  
-
-                            if provider_phone:
-
-                                if send_sms(
-                                    provider_phone,
-                                    f"{st.session_state.current_user} missed {med}."
+                                    patient_phone,
+                                    f"You missed your {med} scheduled at {dose_time}."
                                 ):
 
                                     log_sms(
@@ -919,10 +984,29 @@ def dashboard():
                                         "MISSED"
                                     )
 
-                            st.session_state.sms_sent.add(sms_key)        
+                            if caregiver_phone:
+
+                                send_sms(
+                                    caregiver_phone,
+                                    f"{st.session_state.current_user} missed {med}."
+                                )
+
+                            if provider_phone:
+
+                                send_sms(
+                                    provider_phone,
+                                    f"{st.session_state.current_user} missed {med}."
+                                )
+
+                            st.session_state.sms_sent.add(sms_key)
+
+                    elif current_time >= dose_datetime:
+
+                        status = "pending"
+
                     else:
 
-                        status = "pending"   
+                        status = "upcoming"  
                     
                     # ================= SMS REMINDER =================
 
@@ -981,19 +1065,35 @@ def dashboard():
 
                         with left:
 
-                            st.markdown(f"### 🕒 {dose_time}")
-
                             if status == "taken":
-                                st.success("🟢 Taken")
+
+                                st.success(
+                                    "✅ Medication taken"
+                                )
 
                             elif status == "missed":
-                                st.error("🔴 Missed")
+
+                                st.error(
+                                    "⚠ Medication missed"
+                                )
 
                             elif status == "snoozed":
-                                st.info(f"😴 Until {next_alarm}")
 
-                            else:
-                                st.warning("🟡 Pending")
+                                st.info(
+                                    f"😴 Reminder delayed until {next_alarm}"
+                                )
+
+                            elif status == "pending":
+
+                                st.warning(
+                                    "💊 Time to take medication"
+                                )
+
+                            elif status == "upcoming":
+
+                                st.caption(
+                                    f"⏰ Next dose at {dose_time}"
+                                )
 
                         with right:
 
@@ -1030,7 +1130,7 @@ def dashboard():
 
                                             if send_sms(
                                                 patient_phone,
-                                                f"You snoozed {med} until {next_time}."
+                                                f"Snooze for {med} has been cancelled."
                                             ):
 
                                                 log_sms(
@@ -1045,9 +1145,7 @@ def dashboard():
                                             send_sms(
                                                 caregiver_phone,
                                                 f"{st.session_state.current_user} snoozed {med}."
-                                            )
-
-                                        st.session_state.sms_sent.add(sms_key)    
+                                            )   
 
                                     st.success("Snooze cancelled.")
 
@@ -1180,7 +1278,188 @@ def dashboard():
                                 else:
 
                                     st.error("⚠ Maximum snoozes reached.")
-                                    
+        
+
+        # ---------------- ADHERENCE ----------------
+
+
+        # ---------------- ADHERENCE ----------------
+
+
+        today_taken = 0
+        today_total = 0
+
+
+        overall_taken = 0
+        overall_total = 0
+
+
+        current_time = datetime.now()
+
+
+        for (
+            med,
+            time,
+            dosage,
+            instructions,
+            start_date,
+            end_date,
+            start_time,
+            frequency_hours,
+            purpose,
+            how_to_take,
+            side_effects,
+            reminders
+        ) in medicines:
+
+
+            if frequency_hours:
+
+                dose_schedule = generate_dose_schedule(
+                    start_date,
+                    end_date,
+                    start_time,
+                    frequency_hours
+                )
+
+            else:
+
+                dose_schedule = [
+                    (
+                        time,
+                        datetime.strptime(
+                            f"{start_date} {time}",
+                            "%Y-%m-%d %I:%M %p"
+                        )
+                    )
+                ]
+
+
+            for dose_time, dose_datetime in dose_schedule:
+
+
+                # OVERALL COUNTER
+
+                if dose_datetime <= current_time:
+
+                    overall_total += 1
+
+
+                    log_found = next(
+                        (
+                            l for l in logs
+                            if l[0] == med
+                            and l[1] == dose_time
+                            and l[2] == str(dose_datetime.date())
+                        ),
+                        None
+                    )
+
+
+                    if log_found:
+
+                        if log_found[3] in [
+                            "Taken",
+                            "Delayed"
+                        ]:
+
+                            overall_taken += 1
+
+
+
+                # TODAY COUNTER
+
+                if dose_datetime.date() == date.today():
+
+                    today_total += 1
+
+
+                    log_found = next(
+                        (
+                            l for l in logs
+                            if l[0] == med
+                            and l[1] == dose_time
+                            and l[2] == str(date.today())
+                        ),
+                        None
+                    )
+
+
+                    if log_found:
+
+                        if log_found[3] in [
+                            "Taken",
+                            "Delayed"
+                        ]:
+
+                            today_taken += 1
+
+
+
+        # USE SHARED CALCULATIONS
+
+        today_adherence = calculate_today_adherence(
+            st.session_state.current_user
+        )
+
+
+        overall_adherence = calculate_treatment_adherence(
+            st.session_state.current_user
+        )
+
+                  
+        st.subheader("📈 Medication Adherence")
+
+
+        col1, col2 = st.columns(2)
+
+
+        with col1:
+
+            st.metric(
+                "📅 Today's Adherence",
+                f"{today_adherence}%"
+            )
+
+            st.caption(
+                f"{today_taken}/{today_total} doses completed"
+            )
+
+
+        with col2:
+
+            st.metric(
+                "📊 Treatment Adherence",
+                f"{overall_adherence}%"
+            )
+
+            st.caption(
+                f"{overall_taken}/{overall_total} doses completed"
+            )
+
+        st.subheader("⚠ Risk Level")
+
+
+        if overall_adherence >= 90:
+
+            st.success(
+                "🟢 Low Risk\n\nExcellent medication adherence."
+            )
+
+
+        elif overall_adherence >= 70:
+
+            st.warning(
+                "🟡 Medium Risk\n\nPatient missed some medications."
+            )
+
+
+        else:
+
+            st.error(
+                "🔴 High Risk\n\nImmediate follow-up recommended."
+            )
+
         st.divider()
 
         st.subheader("⚙️ Account")
@@ -1195,55 +1474,7 @@ def dashboard():
             st.session_state.role = None
             st.session_state.page = "role"
 
-            st.rerun()
-
-        # ---------------- ADHERENCE ----------------
-
-        
-        done = overall_taken + overall_delayed
-
-        adherence = (
-            int(
-                (
-                    (overall_taken + overall_delayed)
-                    / overall_total
-                ) * 100
-            )
-            if overall_total
-            else 0
-        )
-
-        adherence = min(adherence, 100)
-
-                  
-        st.subheader("📈 Overall Adherence")
-        st.progress(adherence / 100)
-
-        st.metric(
-            "Overall Adherence",
-            f"{adherence}%"
-        )
-        
-        st.subheader("⚠ Risk Level")
-
-        if adherence >= 90:
-
-            st.success(
-                "🟢 Low Risk\n\nExcellent medication adherence."
-            )
-
-        elif adherence >= 70:
-
-            st.warning(
-                "🟡 Medium Risk\n\nPatient missed some medications."
-            )
-
-        else:
-
-            st.error(
-                "🔴 High Risk\n\nImmediate follow-up recommended."
-            ) 
-
+            st.rerun()   
 
     # ================= CAREGIVER =================
     elif role == "Caregiver":
@@ -1274,16 +1505,22 @@ def dashboard():
         medicines = get_medications(selected_patient)
         logs = get_user_logs(selected_patient)
 
-        today = str(date.today())
-
-        today_logs = [
-           (log[0], log[1])
-           for log in logs
-        if log[2] == today
-        ]
-
-        total = 0
         today = date.today()
+
+        overall_taken = 0
+        overall_delayed = 0
+        overall_total = 0
+
+        today_taken = 0
+        today_total = 0
+        today_pending = 0
+        today_missed = 0
+
+        remaining_doses = 0
+
+
+        current_time = datetime.now()
+
 
         for (
             med,
@@ -1299,6 +1536,7 @@ def dashboard():
             side_effects,
             reminders
         ) in medicines:
+
 
             if frequency_hours:
 
@@ -1321,25 +1559,88 @@ def dashboard():
                     )
                 ]
 
+
             for dose_time, dose_datetime in dose_schedule:
+                if dose_datetime > current_time:
 
-                if dose_datetime.date() == today:
+                    remaining_doses += 1
 
-                    total += 1
 
-        done = len([
-            log
-            for log in logs
-            if log[2] == today
-            and log[3] in ("Taken", "Delayed")
-        ])
+                # ==========================
+                # OVERALL TREATMENT ADHERENCE
+                # ==========================
 
-        adherence = (
-            int((done / total) * 100)
-            if total else 0
+                if dose_datetime <= current_time:
+
+                    overall_total += 1
+
+
+                    log_found = next(
+                        (
+                            l for l in logs
+                            if l[0] == med
+                            and l[1] == dose_time
+                            and l[2] == str(dose_datetime.date())
+                        ),
+                        None
+                    )
+
+
+                    if log_found:
+
+                        if log_found[3] == "Taken":
+
+                            overall_taken += 1
+
+
+                        elif log_found[3] == "Delayed":
+
+                            overall_delayed += 1
+
+
+
+                # ==========================
+                # TODAY'S ADHERENCE
+                # ==========================
+
+                if dose_datetime.date() == date.today():
+
+                    today_total += 1
+
+
+                    log_found = next(
+                        (
+                            l for l in logs
+                            if l[0] == med
+                            and l[1] == dose_time
+                            and l[2] == str(date.today())
+                        ),
+                        None
+                    )
+
+
+                    if log_found:
+
+                        if log_found[3] in [
+                            "Taken",
+                            "Delayed"
+                        ]:
+
+                            today_taken += 1
+
+        # ===========================
+        # STANDARDIZED ADHERENCE
+        # ===========================
+
+
+        adherence = calculate_today_adherence(
+            selected_patient
         )
 
-        adherence = min(adherence, 100)
+
+        treatment_adherence = calculate_treatment_adherence(
+            selected_patient
+        )             
         
         # ===========================
         # NEXT MEDICATION TRACKER
@@ -1355,31 +1656,440 @@ def dashboard():
 
             st.subheader(f"👤 {selected_patient}")
 
-            col1, col2 = st.columns(2)
+            col1, col2, col3, col4 = st.columns(4)
 
             with col1:
+
                 st.metric(
                     "💊 Today's Scheduled Doses",
-                    total
+                    today_total
                 )
 
+                st.caption(
+                    f"{today_taken}/{today_total} doses completed"
+                )
+
+
             with col2:
+
                 st.metric(
                     "📈 Today's Adherence",
                     f"{adherence}%"
                 )
 
-            if adherence >= 90:
 
-                st.success("🟢 Low Risk")
+            with col3:
 
-            elif adherence >= 70:
+                st.metric(
+                    "📊 Treatment Adherence",
+                    f"{treatment_adherence}%"
+                )
 
-                st.warning("🟡 Medium Risk")
+
+            with col4:
+
+                st.metric(
+                    "📅 Remaining Doses",
+                    remaining_doses
+                )
+
+                
+
+            if treatment_adherence >= 90:
+
+                st.success(
+                    "🟢 Low Risk\n\nExcellent medication adherence."
+                )
+
+
+            elif treatment_adherence >= 70:
+
+                st.warning(
+                    "🟡 Medium Risk\n\nPatient shows inconsistent medication adherence."
+                )
+
 
             else:
 
-                st.error("🔴 High Risk")
+                st.error(
+                    "🔴 High Risk\n\nImmediate follow-up recommended."
+                )
+        
+        # ===========================
+        # LOAD SNOOZE DATA ONCE
+        # ===========================
+
+        snooze_data = {}
+
+
+        snooze_records = get_user_snoozes(
+            selected_patient
+        )
+
+
+        for snooze in snooze_records:
+
+            key = (
+                snooze["medicine_name"],
+                snooze["med_time"]
+            )
+
+            snooze_data[key] = snooze["next_alarm_time"]  
+
+        # ===========================
+        # CAREGIVER ALERT PANEL
+        # ===========================
+
+        st.subheader("🚨 Alerts")
+
+
+        # ===========================
+        # LOAD MISSED ALERTS
+        # ===========================
+
+        missed_alerts = get_pending_missed_alerts(
+            selected_patient
+        )
+
+
+        missed_count = len(
+            missed_alerts
+        )
+
+
+        snoozed_count = 0
+
+
+        current_time = datetime.now()
+
+
+
+        # ===========================
+        # GET EMERGENCY ALERTS
+        # ===========================
+
+        emergencies = get_caregiver_emergencies(
+            st.session_state.current_user
+        )
+
+
+        emergency_count = len(
+            [
+                e for e in emergencies
+                if e["status"] == "Pending"
+            ]
+        )
+
+
+
+        # ===========================
+        # SCAN MEDICATIONS
+        # ===========================
+
+        for (
+            med,
+            time,
+            dosage,
+            instructions,
+            start_date,
+            end_date,
+            start_time,
+            frequency_hours,
+            purpose,
+            how_to_take,
+            side_effects,
+            reminders
+        ) in medicines:
+
+
+            # Generate schedule
+
+            if frequency_hours:
+
+                dose_schedule = generate_dose_schedule(
+                    start_date,
+                    end_date,
+                    start_time,
+                    frequency_hours
+                )
+
+            else:
+
+                dose_schedule = [
+                    (
+                        time,
+                        datetime.strptime(
+                            f"{start_date} {time}",
+                            "%Y-%m-%d %I:%M %p"
+                        )
+                    )
+                ]
+
+
+
+            for dose_time, dose_datetime in dose_schedule:
+
+
+                # ===========================
+                # CHECK SNOOZE
+                # ===========================
+
+                next_alarm = snooze_data.get(
+                    (
+                        med,
+                        dose_time
+                    )
+                )
+
+                if next_alarm:
+
+                    snoozed_count += 1
+
+
+
+                # Only check finished doses
+
+                if dose_datetime >= current_time:
+
+                    continue
+
+
+
+                # Find medication log
+
+                log_found = next(
+                    (
+                        l for l in logs
+                        if l[0] == med
+                        and l[1] == dose_time
+                        and l[2] == str(dose_datetime.date())
+                    ),
+                    None
+                )
+
+                # ===========================
+                # CHECK MEDICATION STATUS
+                # ===========================
+
+
+                if log_found:
+
+
+                    # Completed medication
+                    if log_found[3] in [
+                        "Taken",
+                        "Delayed"
+                    ]:
+
+                        continue
+
+
+
+                    # Already missed medication
+                    elif log_found[3] in [
+                        "Missed",
+                        "Missed Reviewed"
+                    ]:
+
+                        missed_count += 1
+
+
+
+                # No log yet, detect missed dynamically
+
+                else:
+
+
+                    if current_time > dose_datetime + timedelta(minutes=30):
+
+
+                        missed_count += 1
+
+
+                        add_missed_log(
+                            selected_patient,
+                            med,
+                            dose_time,
+                            dose_datetime.date()
+                        )
+
+
+                        create_missed_alert(
+                            selected_patient,
+                            med,
+                            dose_time,
+                            dose_datetime.date()
+                        )
+
+
+
+
+
+        # ===========================
+        # DISPLAY ALERT SUMMARY
+        # ===========================
+
+        col1, col2, col3 = st.columns(3)
+
+
+        with col1:
+
+            st.metric(
+                "❌ Missed",
+                missed_count
+            )
+
+
+        with col2:
+
+            st.metric(
+                "🚑 Emergency",
+                emergency_count
+            )
+
+
+        with col3:
+
+            st.metric(
+                "😴 Snoozed",
+                snoozed_count
+            )
+
+
+
+
+
+        # ===========================
+        # MISSED MEDICATION ALERTS
+        # ===========================
+
+
+        pending_alerts = get_pending_missed_alerts(
+            selected_patient
+        )
+
+
+        if pending_alerts:
+
+
+            for alert in pending_alerts:
+
+                with st.container(border=True):
+
+                    st.error(
+                        f"""
+                        ❌ Missed Medication
+
+
+                        💊 {alert['med_name']}
+
+
+                        🕒 Scheduled:
+                        {alert['med_time']}
+
+
+                        📅 Date:
+                        {alert['date']}
+                        """
+                    )
+
+
+                    if st.button(
+                        "✅ Acknowledged",
+                        key=f"review_{alert['id']}"
+                    ):
+
+
+                        acknowledge_missed_alert(
+                            alert['id']
+                        )
+
+
+                        st.rerun()
+
+
+
+        else:
+
+
+            st.success(
+                "✅ No missed medications"
+            )
+            
+        # ===========================
+        # DISPLAY EMERGENCY DETAILS
+        # ===========================
+
+        st.subheader("🚑 Emergency Alerts")
+
+
+
+        if emergencies:
+
+
+            for emergency in emergencies:
+
+                with st.container(border=True):
+
+                    if emergency["status"] == "Pending":
+
+                        st.error(
+                            f"""
+                            🚨 Emergency Alert
+
+                            Patient:
+                            {emergency["patient_username"]}
+
+                            Time:
+                            {emergency["emergency_time"]}
+
+                            Status:
+                            {emergency["status"]}
+                            """
+                        )
+
+
+                        if st.button(
+                            "✅ Acknowledge",
+                            key=f"emergency_{emergency['id']}"
+                        ):
+
+                            acknowledge_emergency(
+                                emergency["id"]
+                            )
+
+                            st.success(
+                                "Emergency acknowledged."
+                            )
+
+                            st.rerun()
+
+
+                    else:
+
+                        st.success(
+                            f"""
+                            ✅ Emergency Resolved
+
+                            Patient:
+                            {emergency["patient_username"]}
+
+                            Time:
+                            {emergency["emergency_time"]}
+
+                            Status:
+                            {emergency["status"]}
+                            """
+                        )
+
+
+        else:
+
+
+            st.success(
+                "✅ No emergency alerts"
+            )
+  
 
         st.subheader("💊 Today's Medications")
 
@@ -1433,13 +2143,75 @@ def dashboard():
 
                     with top_right:
 
-                        if (med, dose_time) in today_logs:
+                        next_alarm = snooze_data.get(
+                            (
+                                med,
+                                dose_time
+                            )
+                        )
 
-                            st.success("✅ Taken")
+                        is_snoozed = next_alarm is not None
+
+                        log_found = next(
+                            (
+                                l for l in logs
+                                if l[0] == med
+                                and l[1] == dose_time
+                                and l[2] == str(dose_datetime.date())
+                            ),
+                            None
+                        )
+
+
+                        if log_found:
+
+                            if log_found[3] in [
+                                "Taken",
+                                "Delayed"
+                            ]:
+
+                                st.success(
+                                    "✅ Medication Taken"
+                                )
+
+                            elif log_found[3] in [
+                                "Missed",
+                                "Missed Reviewed"
+                            ]:
+
+                                st.error(
+                                    "❌ Medication Missed"
+                                )
+
 
                         else:
 
-                            st.warning("⏳ Pending")
+                            if is_snoozed:
+
+                                st.info(
+                                    f"😴 Snoozed until {next_alarm}"
+                                )
+
+
+                            elif datetime.now() > dose_datetime + timedelta(minutes=30):
+
+                                st.error(
+                                    "❌ Medication Missed"
+                                )
+
+
+                            elif datetime.now() >= dose_datetime:
+
+                                st.warning(
+                                    "⏳ Pending Confirmation"
+                                )
+
+
+                            else:
+
+                                st.info(
+                                    "⏰ Upcoming"
+                                )
 
                     info1, info2 = st.columns(2)
 
@@ -1475,32 +2247,48 @@ def dashboard():
                         f"⏰ Every {frequency_hours} hour(s)"
                     )
 
-                    if (med, dose_time) in today_logs:
-
-                        st.success("✅ Medication Taken Today")
-
-                    else:
-
-                        st.warning("⏳ Awaiting Confirmation")
             
             st.divider()
 
         st.subheader("📈 Adherence")
 
-        st.progress(adherence / 100)
+        st.progress(
+            treatment_adherence / 100
+        )
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
+
 
         with col1:
-            st.metric("Taken", done)
+
+            st.metric(
+                "✅ Taken Today",
+                today_taken
+            )
+
 
         with col2:
-            st.metric("Pending", total - done)
+
+            st.metric(
+                "💊 Scheduled Today",
+                today_total
+            )
+
 
         with col3:
-            st.metric("Adherence", f"{adherence}%")
 
-        st.divider()
+            st.metric(
+                "📅 Remaining Doses",
+                remaining_doses
+            )
+
+
+        with col4:
+
+            st.metric(
+                "📊 Treatment Adherence",
+                f"{treatment_adherence}%"
+    )
 
         st.divider()
 
@@ -1627,40 +2415,50 @@ def dashboard():
 
             today = date.today()
 
-            for med in medicines:
+            today = date.today()
 
-                (
-                    med_name,
-                    med_time,
-                    dosage,
-                    instructions,
-                    start_date,
-                    end_date,
-                    start_time,
-                    frequency_hours,
-                    purpose,
-                    how_to_take,
-                    side_effects,
-                    reminders
-                ) = med
+            scheduled_doses = 0
 
-                start = datetime.strptime(
-                    start_date,
-                    "%Y-%m-%d"
-                ).date()
 
-                end = datetime.strptime(
-                    end_date,
-                    "%Y-%m-%d"
-                ).date()
+            for patient in patients:
 
-                if start <= today <= end:
 
-                    scheduled_doses += (
-                        24 // frequency_hours
-                    )
+                summary = calculate_adherence_summary(
+                    patient[0]
+                )
 
-            col1, col2, col3 = st.columns(3)
+
+                scheduled_doses += summary["today_total"]
+
+            total_adherence = 0
+
+            count = 0
+
+
+            for patient in patients:
+
+                summary = calculate_adherence_summary(
+                    patient[0]
+                )
+
+
+                total_adherence += summary["overall_adherence"]
+
+                count += 1
+
+
+
+            if count > 0:
+
+                average_adherence = round(
+                    total_adherence / count
+                )
+
+            else:
+
+                average_adherence = 0
+
+            col1, col2, col3, col4 = st.columns(4)
 
             with col1:
 
@@ -1669,6 +2467,7 @@ def dashboard():
                     total_patients
                 )
 
+
             with col2:
 
                 st.metric(
@@ -1676,7 +2475,16 @@ def dashboard():
                     scheduled_doses
                 )
 
+
             with col3:
+
+                st.metric(
+                    "📊 Average Adherence",
+                    f"{average_adherence}%"
+                )
+
+
+            with col4:
 
                 st.metric(
                     "🚨 Emergencies",
@@ -1707,18 +2515,19 @@ def dashboard():
             current_time = datetime.now()  
             schedule_rows = []
 
-            overall_taken = 0
-            overall_delayed = 0
-            overall_total = 0
+            summary = calculate_adherence_summary(
+                selected_patient
+            )
 
-            taken = 0
-            delayed = 0
-            missed = 0
-            pending = 0
 
-            total_scheduled = 0          # today + tomorrow
-            today_scheduled = 0          # today only
-            today_total = 0             # for adherence only
+            taken = summary["today_taken"]
+
+            delayed = summary["today_delayed"]
+
+            missed = summary["today_missed"]
+
+            pending = summary["today_pending"]
+
 
             for (
                 med_name,
@@ -1757,19 +2566,7 @@ def dashboard():
                     ]
 
                 for dose_time, dose_datetime in dose_schedule:
-                    if dose_datetime > current_time:
-                        continue
 
-                    overall_total += 1
-
-                    if dose_datetime.date() > today + timedelta(days=1):
-                        continue
-
-                    total_scheduled += 1
-                    
-                    if dose_datetime.date() == today:
-                        today_scheduled += 1
-                        today_total += 1
 
                     status = "🔵 Upcoming"
 
@@ -1792,28 +2589,21 @@ def dashboard():
 
                         if log_found[3] == "Taken":
 
-                            overall_taken += 1
-
-                            if dose_datetime.date() == today:
-                                taken += 1
-
                             status = "✅ Taken"
+
 
                         elif log_found[3] == "Delayed":
 
-                            overall_delayed += 1
-
-                            if dose_datetime.date() == today:
-                                delayed += 1
-
                             status = "🟡 Delayed"
 
-                        elif log_found[3] == "Missed":
 
-                            if dose_datetime.date() == today:
-                                missed += 1
+                        elif log_found[3] in [
+                            "Missed",
+                            "Missed Reviewed"
+                        ]:
 
                             status = "❌ Missed"
+
                     else:
 
                         # Today's dose
@@ -1822,15 +2612,17 @@ def dashboard():
                             if current_time > dose_datetime + timedelta(minutes=30):
 
                                 status = "❌ Missed"
-                                missed += 1
+
 
                             else:
 
-                                if dose_datetime.date() == today:
-                                    status = "⏳ Pending"
-                                    pending += 1
-                                else:
-                                    status = "🔵 Upcoming"
+                                status = "⏳ Pending"
+
+
+                        # Future dose
+                        elif dose_datetime.date() > today:
+
+                            status = "🔵 Upcoming"
 
                         # Future dose
                         elif dose_datetime.date() > today:
@@ -1847,11 +2639,8 @@ def dashboard():
 
                     })
 
-            adherence = (
-                int(((overall_taken + overall_delayed) / overall_total) * 100)
-                if overall_total else 0
-            )
-
+            treatment_adherence = summary["overall_adherence"]
+            
             st.subheader("👤 Patient Summary")
 
             with st.container(border=True):
@@ -1864,14 +2653,14 @@ def dashboard():
 
                     st.metric(
                         "Today's Medication Schedule",
-                        today_scheduled
+                        summary["today_total"]
                     )
 
                 with col2:
 
                     st.metric(
                         "Overall Adherence",
-                        f"{adherence}%"
+                        f"{treatment_adherence}%"
                     )
 
                 col1, col2, col3, col4 = st.columns(4)
@@ -1959,13 +2748,6 @@ def dashboard():
         # ASSIGN MEDICATION
         # ====================================
         elif page == "💊 Assign Medication":
-
-            st.subheader("💊 Assign Medication")
-
-            if st.session_state.get("med_added", False):
-                st.success("✅ Medication assigned successfully!")
-                st.session_state.med_added = False
-
             # ---------------- BASIC INFO ----------------
 
             col1, col2 = st.columns(2)
@@ -2116,7 +2898,10 @@ def dashboard():
                     st.session_state.adding_med = False
 
                     st.rerun()    
-
+            
+            if st.session_state.get("med_added", False):
+                st.success("✅ Medication assigned successfully!")
+                st.session_state.med_added = False
         # ====================================
         # MEDICATION HISTORY
         # ====================================
@@ -2232,106 +3017,30 @@ def dashboard():
                 if log[2] == today_str
             ]
             # ==========================
-            # Initialize Counters
+            # LOAD ADHERENCE SUMMARY
             # ==========================
 
-            total_doses = 0
-            completed = len([
-                log
-                for log in today_logs
-                if log[3] == "Taken"
-            ])
+            summary = calculate_adherence_summary(
+                selected_patient
+            )
 
-            delayed = len([
-                log
-                for log in today_logs
-                if log[3] == "Delayed"
-            ])
 
-            pending = 0
-            missed = 0
+            total_doses = summary["today_total"]
 
-            current_time = datetime.now()        
+            completed = summary["today_taken"]
 
-            for (
+            delayed = summary["today_delayed"]
 
-                med,
-                time,
-                dosage,
-                instructions,
-                start_date,
-                end_date,
-                start_time,
-                frequency_hours,
-                purpose,
-                how_to_take,
-                side_effects,
-                reminders
+            pending = summary["today_pending"]
 
-            ) in meds:
+            missed = summary["today_missed"]
 
-                start = datetime.strptime(
-                    start_date,
-                    "%Y-%m-%d"
-                ).date()
+            treatment_adherence = summary["overall_adherence"]  
 
-                end = datetime.strptime(
-                    end_date,
-                    "%Y-%m-%d"
-                ).date()
+            
 
-                if today < start:
-                    continue
-
-                if today > end:
-                    continue
-
-                if frequency_hours:
-
-                    dose_schedule = generate_dose_schedule(
-                        start_date,
-                        end_date,
-                        start_time,
-                        frequency_hours
-                    )
-
-                else:
-
-                    dose_schedule = [
-                        (
-                            time,
-                            datetime.strptime(
-                                f"{start_date} {time}",
-                                "%Y-%m-%d %I:%M %p"
-                            )
-                        )
-                    ]
-
-                for dose_time, dose_datetime in dose_schedule:
-
-                    if dose_datetime.date() != today:
-                        continue
-
-                    total_doses += 1
-
-                    logged = any(
-                        log[0] == med and
-                        log[1] == dose_time and
-                        log[2] == str(today)
-                        for log in today_logs
-                    )
-
-                    if logged:
-                        continue
-
-                    if current_time > dose_datetime + timedelta(minutes=30):
-                        missed += 1
-                    else:
-                        pending += 1
-
-            adherence = (
-                int(((completed + delayed) / total_doses) * 100)
-                if total_doses else 0
+            treatment_adherence = calculate_treatment_adherence(
+                selected_patient
             )
 
             col1, col2, col3, col4 = st.columns(4)
@@ -2339,7 +3048,7 @@ def dashboard():
             with col1:
                 st.metric(
                     "📈 Adherence",
-                    f"{adherence}%"
+                    f"{treatment_adherence}%"
                 )
 
             with col2:
@@ -2436,9 +3145,6 @@ def dashboard():
 
                 for dose_time, dose_datetime in dose_schedule:
 
-                    if dose_datetime.date() < today:
-                        continue
-
                     status = "⏳ Upcoming"
 
                     for log in logs:
@@ -2455,23 +3161,46 @@ def dashboard():
                             elif log[3] == "Delayed":
                                 status = "🟡 Delayed"
 
-                            elif log[3] == "Missed":
+                            elif log[3] in [
+                                "Missed",
+                                "Missed Reviewed"
+                            ]:
                                 status = "❌ Missed"
 
                             break
 
-                    if (
-                        dose_datetime.date() == today
-                        and status == "⏳ Upcoming"
-                    ):
+                    if status == "⏳ Upcoming":
 
-                        if current_time > dose_datetime + timedelta(minutes=30):
+
+                        # Past medication date
+
+                        if dose_datetime.date() < today:
 
                             status = "❌ Missed"
 
-                        else:
 
-                            status = "⏳ Pending"
+
+                        # Today's medication
+
+                        elif dose_datetime.date() == today:
+
+
+                            if current_time > dose_datetime + timedelta(minutes=30):
+
+                                status = "❌ Missed"
+
+
+                            else:
+
+                                status = "⏳ Pending"
+
+
+
+                        # Future medication
+
+                        elif dose_datetime.date() > today:
+
+                            status = "🔵 Upcoming"
 
                     schedule_rows.append([
 
@@ -2517,18 +3246,19 @@ def dashboard():
 
             else:
 
-                st.info("No medication schedule.")               
+                st.info("No medication schedule.")  
+
             st.divider()
 
             st.subheader("⚠ Risk Level")
 
-            if adherence >= 90:
+            if treatment_adherence >= 90:
 
                 st.success(
                     "🟢 Low Risk\n\nExcellent medication adherence."
                 )
 
-            elif adherence >= 70:
+            elif treatment_adherence >= 70:
 
                 st.warning(
                     "🟡 Medium Risk\n\nPatient missed some medications."

@@ -1,293 +1,134 @@
-import sqlite3
+import streamlit as st
+from supabase import create_client
+
+
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+
+supabase = create_client(
+    SUPABASE_URL,
+    SUPABASE_KEY
+)
+
 from datetime import date
 from sms_service import send_sms
 
-DB_NAME = "adherence.db"
-
-
-# ---------------- CONNECT ----------------
-def connect():
-    return sqlite3.connect(DB_NAME)
 
 
 # ---------------- INIT DATABASE ----------------
 def init_db():
-
-    conn = connect()
-    c = conn.cursor()
-
-    # USERS
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            password TEXT,
-            role TEXT,
-            phone_number TEXT
-        )
-    """)
-    
-
-    # MEDICATION LOG
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS medication_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            med_name TEXT,
-            med_time TEXT,
-            date TEXT,
-            dosage TEXT,
-            instructions TEXT,
-            status TEXT,
-
-            UNIQUE(username, med_name, med_time, date)    
-        )
-    """)
-
-    # ASSIGNED MEDICATIONS
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS medications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        patient_username TEXT,
-        medicine_name TEXT,
-        time TEXT,
-        dosage TEXT,
-        instructions TEXT,
-              
-        start_date TEXT,
-        end_date TEXT,      
-        start_time TEXT,
-        frequency_hours INTEGER,    
-                      
-        purpose TEXT,
-        how_to_take TEXT,
-        side_effects TEXT,
-        reminders TEXT,
-
-        UNIQUE (
-            patient_username,
-            medicine_name,
-            time
-        )
-    )
-""")
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS caregiver_assignment (
-            caregiver_username TEXT UNIQUE,
-            patient_username TEXT UNIQUE,
-            assigned_by TEXT
-        )
-    """)
-
-    # ALERT SYSTEM
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS medication_alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            medicine_name TEXT,
-            med_time TEXT,
-            snooze_count INTEGER DEFAULT 0,
-            missed INTEGER DEFAULT 0,
-            next_alarm_time TEXT,
-
-            UNIQUE(username, medicine_name,med_time)  
-        )
-    """)
-    
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sms_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            medication TEXT,
-            med_time TEXT,
-            sms_type TEXT,
-            sent_date TEXT,
-            UNIQUE(
-                username,
-                medication,
-                med_time,
-                sms_type,
-                sent_date
-            )               
-        )
-    """)
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS emergency_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient_username TEXT,
-            caregiver_username TEXT,
-            provider_username TEXT,
-            emergency_time TEXT,
-            status TEXT
-        )
-    """)
-
-    # EMERGENCY ALERTS
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS emergency_alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient_username TEXT,
-            provider_username TEXT,
-            emergency_time TEXT,
-            status TEXT DEFAULT 'Pending'
-        )
-    """)
-    
-    conn.commit()
-    conn.close()
+    # Tables are already managed by Supabase.
+    pass
 # ---------------- USERS ----------------
 def add_user(username, password, role, phone_number):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase.table("users")
+        .insert({
+            "username": username,
+            "password": password,
+            "role": role,
+            "phone_number": phone_number
+        })
+        .execute()
+    )
 
-    c.execute("""
-        INSERT INTO users (
-            username,
-            password,
-            role,
-            phone_number
-        )
-        VALUES (?, ?, ?, ?)
-    """, (username, password, role, phone_number))
-
-    conn.commit()
-    conn.close()
+    return result
 
 
 def get_user(username):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("users")
+        .select("username,password,role")
+        .eq("username", username)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT username, password, role
-        FROM users
-        WHERE username = ?
-    """, (username,))
+    if result.data:
 
-    user = c.fetchone()
+        user = result.data[0]
 
-    conn.close()
+        return (
+            user["username"],
+            user["password"],
+            user["role"]
+        )
 
-    return user
+    return None
 
 
 def get_patients():
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("users")
+        .select("username")
+        .eq("role", "Patient")
+        .execute()
+    )
 
-    c.execute("""
-        SELECT username
-        FROM users
-        WHERE role = 'Patient'
-    """)
-
-    patients = c.fetchall()
-
-    conn.close()
-
-    return patients
+    return [(r["username"],) for r in result.data]
 
 def get_caregivers():
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("users")
+        .select("username")
+        .eq("role", "Caregiver")
+        .execute()
+    )
 
-    c.execute("""
-        SELECT username
-        FROM users
-        WHERE role='Caregiver'
-    """)
-
-    result = c.fetchall()
-
-    conn.close()
-
-    return result
+    return [(r["username"],) for r in result.data]
 
 def assign_caregiver(caregiver, patient, physician):
 
-    conn = connect()
-    c = conn.cursor()
-
-    # Remove caregiver assignment
     if caregiver is None:
 
-        c.execute("""
-            DELETE FROM caregiver_assignment
-            WHERE patient_username = ?
-        """, (patient,))
+        supabase.table("caregiver_assignment").delete().eq(
+            "patient_username",
+            patient
+        ).execute()
 
     else:
 
-        c.execute("""
-            INSERT OR REPLACE INTO caregiver_assignment
-            (
-                caregiver_username,
-                patient_username,
-                assigned_by
-            )
-            VALUES (?, ?, ?)
-        """, (
-            caregiver,
-            patient,
-            physician
-        ))
+        # Delete old assignment first
+        supabase.table("caregiver_assignment").delete().eq(
+            "patient_username",
+            patient
+        ).execute()
 
-    conn.commit()
-    conn.close()
+        # Insert new assignment
+        supabase.table("caregiver_assignment").insert({
+
+            "caregiver_username": caregiver,
+            "patient_username": patient,
+            "assigned_by": physician
+
+        }).execute()
 
 from datetime import datetime
 
 def send_emergency(patient_username):
 
-    conn = connect()
-    c = conn.cursor()
+    caregiver = get_patient_caregiver(patient_username)
 
-    # Get caregiver
-    c.execute("""
-        SELECT caregiver_username
-        FROM caregiver_assignment
-        WHERE patient_username = ?
-    """, (patient_username,))
+    provider_username = get_assigned_physician(patient_username)
 
-    caregiver = c.fetchone()
+    supabase.table("emergency_alerts").insert({
 
-    # Get physician
-    c.execute("""
-        SELECT assigned_by
-        FROM caregiver_assignment
-        WHERE patient_username = ?
-    """, (patient_username,))
+        "patient_username": patient_username,
+        "provider_username": provider_username,
+        "emergency_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "Pending"
 
-    provider = c.fetchone()
+    }).execute()
 
-    provider_username = provider[0] if provider else None
-
-    # Save emergency alert
-    c.execute("""
-        INSERT INTO emergency_alerts
-        (
-            patient_username,
-            provider_username,
-            emergency_time,
-            status
-        )
-        VALUES (?, ?, ?, ?)
-    """, (
-        patient_username,
-        provider_username,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Pending"
-    ))
-
-    conn.commit()
-     
-    # ================= SEND SMS =================
+    # ---------- SMS ----------
 
     patient_phone = get_user_phone(patient_username)
 
@@ -316,346 +157,610 @@ def send_emergency(patient_username):
             f"🚨 Emergency alert from patient {patient_username}."
         )
 
-    conn.close()
-
-    return caregiver[0] if caregiver else None
+    return caregiver
 
 def get_user_phone(username):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("users")
+        .select("phone_number")
+        .eq("username", username)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT phone_number
-        FROM users
-        WHERE username=?
-    """,(username,))
+    if result.data:
 
-    result = c.fetchone()
+        return result.data[0]["phone_number"]
 
-    conn.close()
-
-    return result[0] if result else None
+    return None
 
 def get_caregiver_phone(patient_username):
 
-    conn = connect()
-    c = conn.cursor()
+    caregiver = get_patient_caregiver(patient_username)
 
-    c.execute("""
-        SELECT caregiver_username
-        FROM caregiver_assignment
-        WHERE patient_username=?
-    """,(patient_username,))
-
-    caregiver = c.fetchone()
-
-    if not caregiver:
-
-        conn.close()
+    if caregiver is None:
 
         return None
 
-    c.execute("""
-        SELECT phone_number
-        FROM users
-        WHERE username=?
-    """,(caregiver[0],))
-
-    phone = c.fetchone()
-
-    conn.close()
-
-    return phone[0] if phone else None
+    return get_user_phone(caregiver)
 
 def get_provider_phone(patient_username):
 
-    conn = connect()
-    c = conn.cursor()
+    provider = get_assigned_physician(patient_username)
 
-    c.execute("""
-        SELECT assigned_by
-        FROM caregiver_assignment
-        WHERE patient_username=?
-    """,(patient_username,))
-
-    provider = c.fetchone()
-
-    if not provider:
-
-        conn.close()
+    if provider is None:
 
         return None
 
-    c.execute("""
-        SELECT phone_number
-        FROM users
-        WHERE username=?
-    """,(provider[0],))
-
-    phone = c.fetchone()
-
-    conn.close()
-
-    return phone[0] if phone else None
+    return get_user_phone(provider)
     
 def get_healthcare_provider():
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("users")
+        .select("username")
+        .eq("role", "Healthcare Provider")
+        .limit(1)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT username
-        FROM users
-        WHERE role='Healthcare Provider'
-        LIMIT 1
-    """)
+    if result.data:
 
-    result = c.fetchone()
-
-    conn.close()
-
-    if result:
-        return result[0]
+        return result.data[0]["username"]
 
     return None
 
 
 def get_assigned_caregiver(patient_username):
 
-    conn = connect()
-    c = conn.cursor()
-
-    c.execute("""
-        SELECT caregiver_username
-        FROM caregiver_assignment
-        WHERE patient_username = ?
-    """, (patient_username,))
-
-    result = c.fetchone()
-
-    conn.close()
-
-    if result:
-        return result[0]
-
-    return None
+    return get_patient_caregiver(patient_username)
 
 def get_phone_number(username):
 
-    conn = connect()
-    c = conn.cursor()
+    return get_user_phone(username)
 
-    c.execute("""
-        SELECT phone_number
-        FROM users
-        WHERE username = ?
-    """, (username,))
+def get_patient_emergency_alerts(patient_username):
 
-    result = c.fetchone()
+    result = (
+        supabase
+        .table("emergency_alerts")
+        .select(
+            "patient_username, emergency_time, status"
+        )
+        .eq(
+            "patient_username",
+            patient_username
+        )
+        .order(
+            "emergency_time",
+            desc=True
+        )
+        .execute()
+    )
 
-    conn.close()
 
-    if result:
-        return result[0]
-
-    return None
+    return result.data
 
 def get_provider_emergencies(provider_username):
 
-    conn = connect()
-    c = conn.cursor()
+    emergency_result = (
+        supabase
+        .table("emergency_alerts")
+        .select("*")
+        .eq("provider_username", provider_username)
+        .order("emergency_time", desc=True)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT
-            e.patient_username,
-            ca.caregiver_username,
-            e.emergency_time,
-            e.status
-        FROM emergency_alerts e
-        LEFT JOIN caregiver_assignment ca
-            ON e.patient_username = ca.patient_username
-        WHERE e.provider_username = ?
-        ORDER BY e.emergency_time DESC
-    """, (provider_username,))
+    emergencies = []
 
-    emergencies = c.fetchall()
+    for alert in emergency_result.data:
 
-    conn.close()
+        caregiver_result = (
+            supabase
+            .table("caregiver_assignment")
+            .select("caregiver_username")
+            .eq("patient_username", alert["patient_username"])
+            .execute()
+        )
+
+        caregiver = None
+
+        if caregiver_result.data:
+            caregiver = caregiver_result.data[0]["caregiver_username"]
+
+        emergencies.append((
+            alert["patient_username"],
+            caregiver,
+            alert["emergency_time"],
+            alert["status"]
+        ))
 
     return emergencies
 
-def resolve_emergency(patient_username, emergency_time):
+def get_caregiver_emergencies(caregiver_username):
 
-    conn = connect()
-    c = conn.cursor()
+    # Get assigned patient
+    patient_result = (
+        supabase
+        .table("caregiver_assignment")
+        .select("patient_username")
+        .eq(
+            "caregiver_username",
+            caregiver_username
+        )
+        .execute()
+    )
 
-    c.execute("""
-        UPDATE emergency_alerts
-        SET status = 'Resolved'
-        WHERE patient_username = ?
-        AND emergency_time = ?
-    """, (
-        patient_username,
+
+    if not patient_result.data:
+
+        return []
+
+
+    patient_username = patient_result.data[0]["patient_username"]
+
+
+    # Get emergency alerts of that patient
+    emergency_result = (
+        supabase
+        .table("emergency_alerts")
+        .select("*")
+        .eq(
+            "patient_username",
+            patient_username
+        )
+        .order(
+            "emergency_time",
+            desc=True
+        )
+        .execute()
+    )
+
+
+    emergencies = []
+
+
+    for alert in emergency_result.data:
+
+        emergencies.append(
+        {
+            "id": alert["id"],
+            "patient_username": alert["patient_username"],
+            "emergency_time": alert["emergency_time"],
+            "status": alert["status"]
+        }
+        )
+
+
+    return emergencies
+
+def get_user_snoozes(username):
+
+    result = (
+        supabase
+        .table("medication_alerts")
+        .select(
+            "medicine_name, med_time, next_alarm_time"
+        )
+        .eq(
+            "username",
+            username
+        )
+        .execute()
+    )
+
+
+    return result.data    
+
+def resolve_emergency(
+    patient_username,
+    emergency_time
+):
+
+    supabase.table("emergency_alerts").update({
+
+        "status": "Resolved"
+
+    }).eq(
+
+        "patient_username",
+        patient_username
+
+    ).eq(
+
+        "emergency_time",
         emergency_time
-    ))
 
-    conn.commit()
-    conn.close()
-
+    ).execute()
+    
 def get_assigned_patient(caregiver):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("caregiver_assignment")
+        .select("patient_username")
+        .eq("caregiver_username", caregiver)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT patient_username
-        FROM caregiver_assignment
-        WHERE caregiver_username = ?
-    """, (caregiver,))
-
-    result = c.fetchone()
-
-    conn.close()
-
-    if result:
-        return result[0]
+    if result.data:
+        return result.data[0]["patient_username"]
 
     return None
+
+def calculate_treatment_adherence(username):
+
+    medicines = get_medications(username)
+    logs = get_user_logs(username)
+
+    current_time = datetime.now()
+
+    overall_total = 0
+    completed = 0
+
+
+    for (
+        med,
+        time,
+        dosage,
+        instructions,
+        start_date,
+        end_date,
+        start_time,
+        frequency_hours,
+        purpose,
+        how_to_take,
+        side_effects,
+        reminders
+    ) in medicines:
+
+
+        if frequency_hours:
+
+            dose_schedule = generate_dose_schedule(
+                start_date,
+                end_date,
+                start_time,
+                frequency_hours
+            )
+
+        else:
+
+            dose_schedule = [
+                (
+                    time,
+                    datetime.strptime(
+                        f"{start_date} {time}",
+                        "%Y-%m-%d %I:%M %p"
+                    )
+                )
+            ]
+
+
+        for dose_time, dose_datetime in dose_schedule:
+
+
+            if dose_datetime > current_time:
+
+                continue
+
+
+            overall_total += 1
+
+
+            log_found = next(
+                (
+                    l for l in logs
+                    if l[0] == med
+                    and l[1] == dose_time
+                    and l[2] == str(dose_datetime.date())
+                ),
+                None
+            )
+
+
+            if log_found and log_found[3] in [
+                "Taken",
+                "Delayed"
+            ]:
+
+                completed += 1
+
+
+
+    if overall_total == 0:
+
+        return 0
+
+
+    return round(
+        (completed / overall_total) * 100
+    )
+
+
+def calculate_today_adherence(username):
+
+    medicines = get_medications(username)
+    logs = get_user_logs(username)
+
+    today = date.today()
+
+    today_total = 0
+    today_taken = 0
+
+
+    for (
+        med,
+        time,
+        dosage,
+        instructions,
+        start_date,
+        end_date,
+        start_time,
+        frequency_hours,
+        purpose,
+        how_to_take,
+        side_effects,
+        reminders
+    ) in medicines:
+
+
+        if frequency_hours:
+
+            dose_schedule = generate_dose_schedule(
+                start_date,
+                end_date,
+                start_time,
+                frequency_hours
+            )
+
+        else:
+
+            dose_schedule = [
+                (
+                    time,
+                    datetime.strptime(
+                        f"{start_date} {time}",
+                        "%Y-%m-%d %I:%M %p"
+                    )
+                )
+            ]
+
+
+        for dose_time, dose_datetime in dose_schedule:
+
+
+            if dose_datetime.date() != today:
+
+                continue
+
+
+            today_total += 1
+
+
+            log_found = next(
+                (
+                    l for l in logs
+                    if l[0] == med
+                    and l[1] == dose_time
+                    and l[2] == str(today)
+                ),
+                None
+            )
+
+
+            if log_found and log_found[3] in [
+                "Taken",
+                "Delayed"
+            ]:
+
+                today_taken += 1
+
+
+
+    if today_total == 0:
+
+        return 0
+
+
+    return round(
+        (today_taken / today_total) * 100
+    )
+    
 
 
 # ---------------- MEDICATIONS ----------------
 def add_medication(
-        patient_username, 
-        medicine_name, 
-        time,
-        start_date,
-        end_date,
-        start_time,
-        frequency_hours, 
-        dosage=None, 
-        instructions=None, 
-        purpose=None, 
-        how_to_take=None, 
-        side_effects=None, 
-        reminders=None
+    patient_username,
+    medicine_name,
+    time,
+    start_date,
+    end_date,
+    start_time,
+    frequency_hours,
+    dosage=None,
+    instructions=None,
+    purpose=None,
+    how_to_take=None,
+    side_effects=None,
+    reminders=None
 ):
 
-    conn = connect()
-    c = conn.cursor()
+    result = supabase.table("medications").insert({
 
-    c.execute("""
-        INSERT OR IGNORE INTO medications (
-            patient_username,
-            medicine_name,
-            time,
-            dosage,
-            instructions,  
-            start_date,
-            end_date,
-            start_time,
-            frequency_hours,     
-            purpose,
-            how_to_take,
-            side_effects,
-            reminders  
+        "patient_username": patient_username,
+        "medicine_name": medicine_name,
+        "time": time,
+        "dosage": dosage,
+        "instructions": instructions,
+        "start_date": start_date,
+        "end_date": end_date,
+        "start_time": start_time,
+        "frequency_hours": frequency_hours,
+        "purpose": purpose,
+        "how_to_take": how_to_take,
+        "side_effects": side_effects,
+        "reminders": reminders
+
+    }).execute()
+
+    return result
+
+
+def get_medications(username):
+
+    result = (
+        supabase
+        .table("medications")
+        .select("*")
+        .eq("patient_username", username)
+        .execute()
+    )
+
+    meds = []
+
+    for row in result.data:
+
+        meds.append(
+
+            (
+                row["medicine_name"],
+                row["time"],
+                row["dosage"],
+                row["instructions"],
+                row["start_date"],
+                row["end_date"],
+                row["start_time"],
+                row["frequency_hours"],
+                row["purpose"],
+                row["how_to_take"],
+                row["side_effects"],
+                row["reminders"]
+            )
+
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (patient_username, medicine_name, time, dosage, instructions, start_date, end_date, start_time, frequency_hours, purpose, how_to_take, side_effects, reminders))
-
-    conn.commit()
-    conn.close()
-
-
-def get_medications(patient_username):
-
-    conn = connect()
-    c = conn.cursor()
-
-    c.execute("""
-        SELECT
-            medicine_name,
-            time,
-            dosage,
-            instructions,
-            start_date,
-            end_date,
-            start_time,
-            frequency_hours,
-            purpose,
-            how_to_take,
-            side_effects,
-            reminders
-        FROM medications
-        WHERE patient_username = ?
-    """, (patient_username,))
-
-    meds = c.fetchall()
-
-    conn.close()
 
     return meds
 
+def resolve_missed_medication(
+    username,
+    med_name,
+    med_time,
+    med_date
+):
+
+    # Do NOT modify medication_log status
+    # Missed must remain Missed
+
+    return True
+
+
+def create_missed_alert(
+    username,
+    med_name,
+    med_time,
+    med_date
+):
+
+    existing = (
+        supabase
+        .table("missed_alerts")
+        .select("*")
+        .eq("username", username)
+        .eq("med_name", med_name)
+        .eq("med_time", med_time)
+        .eq("date", str(med_date))
+        .execute()
+    )
+
+
+    if existing.data:
+        return
+
+
+    supabase.table(
+        "missed_alerts"
+    ).insert({
+
+        "username": username,
+        "med_name": med_name,
+        "med_time": med_time,
+        "date": str(med_date),
+        "alert_status": "Pending"
+
+    }).execute()
+
+def get_pending_missed_alerts(username):
+
+    result = (
+        supabase
+        .table("missed_alerts")
+        .select("*")
+        .eq(
+            "username",
+            username
+        )
+        .eq(
+            "alert_status",
+            "Pending"
+        )
+        .execute()
+    )
+
+    return result.data
+
+def acknowledge_missed_alert(alert_id):
+
+    supabase.table(
+        "missed_alerts"
+    ).update({
+
+        "alert_status": "Acknowledged"
+
+    }).eq(
+        "id",
+        alert_id
+    ).execute()        
 
 def delete_medication(
     patient_username,
     medicine_name,
     med_time
 ):
-
-    conn = connect()
-    c = conn.cursor()
-
     # Delete medication assignment
-    c.execute("""
-        DELETE FROM medications
-        WHERE patient_username = ?
-        AND medicine_name = ?
-        AND time = ?
-    """, (
-        patient_username,
-        medicine_name,
-        med_time
-    ))
+    supabase.table("medications") \
+        .delete() \
+        .eq("patient_username", patient_username) \
+        .eq("medicine_name", medicine_name) \
+        .eq("time", med_time) \
+        .execute()
 
     # Delete medication history
-    c.execute("""
-        DELETE FROM medication_log
-        WHERE username = ?
-        AND med_name = ?
-        AND med_time = ?
-    """, (
-        patient_username,
-        medicine_name,
-        med_time
-    ))
+    supabase.table("medication_log") \
+        .delete() \
+        .eq("username", patient_username) \
+        .eq("med_name", medicine_name) \
+        .eq("med_time", med_time) \
+        .execute()
 
     # Delete medication alerts
-    c.execute("""
-        DELETE FROM medication_alerts
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?
-    """, (
-        patient_username,
-        medicine_name,
-        med_time
-    ))
+    supabase.table("medication_alerts") \
+        .delete() \
+        .eq("username", patient_username) \
+        .eq("medicine_name", medicine_name) \
+        .eq("med_time", med_time) \
+        .execute()
 
     # Delete SMS logs
-    c.execute("""
-        DELETE FROM sms_logs
-        WHERE username = ?
-        AND medication = ?
-        AND med_time = ?
-    """, (
-        patient_username,
-        medicine_name,
-        med_time
-    ))
-
-    conn.commit()
-    conn.close()
+    supabase.table("sms_logs") \
+        .delete() \
+        .eq("username", patient_username) \
+        .eq("medication", medicine_name) \
+        .eq("med_time", med_time) \
+        .execute()
 
 
 # ---------------- MEDICATION LOGS ----------------
@@ -666,113 +771,101 @@ def mark_med_done(
     status="Taken"
 ):
 
-    conn = connect()
-    c = conn.cursor()
+    # Check if today's log already exists
+    result = (
+        supabase
+        .table("medication_log")
+        .select("id")
+        .eq("username", username)
+        .eq("med_name", med_name)
+        .eq("med_time", med_time)
+        .eq("date", str(date.today()))
+        .execute()
+    )
 
-    c.execute("""
-        SELECT id
-        FROM medication_log
-        WHERE username=?
-        AND med_name=?
-        AND med_time=?
-        AND date=?
-    """, (
-        username,
-        med_name,
-        med_time,
-        str(date.today())
-    ))
+    if result.data:
 
-    existing = c.fetchone()
+        # Update existing record
+        supabase.table("medication_log").update({
 
-    if existing:
+            "status": status
 
-        c.execute("""
-            UPDATE medication_log
-            SET status=?
-            WHERE id=?
-        """, (
-            status,
-            existing[0]
-        ))
+        }).eq(
+            "id",
+            result.data[0]["id"]
+        ).execute()
 
     else:
 
-        c.execute("""
-            INSERT INTO medication_log(
-                username,
-                med_name,
-                med_time,
-                date,
-                dosage,
-                instructions,
-                status
-            )
-            VALUES(?,?,?,?,?,?,?)
-        """, (
-            username,
-            med_name,
-            med_time,
-            str(date.today()),
-            None,
-            None,
-            status
-        ))
+        # Insert new record
+        supabase.table("medication_log").insert({
 
-    conn.commit()
-    conn.close()
+            "username": username,
+            "med_name": med_name,
+            "med_time": med_time,
+            "date": str(date.today()),
+            "dosage": None,
+            "instructions": None,
+            "status": status
 
+        }).execute()
 
 def get_user_logs(username):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("medication_log")
+        .select("*")
+        .eq("username", username)
+        .order("date", desc=True)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT med_name, med_time, date, status
-        FROM medication_log
-        WHERE username = ?
-        ORDER BY date DESC
-    """, (username,))
+    logs = []
 
-    logs = c.fetchall()
+    for row in result.data:
 
-    conn.close()
+        logs.append(
+
+            (
+                row["med_name"],
+                row["med_time"],
+                row["date"],
+                row["status"]
+            )
+
+        )
 
     return logs
 
 # ---------------- ALERT SYSTEM ----------------
-def create_alert(username, medicine_name, med_time):
+def create_alert(
+    username,
+    medicine_name,
+    med_time
+):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("medication_alerts")
+        .select("id")
+        .eq("username", username)
+        .eq("medicine_name", medicine_name)
+        .eq("med_time", med_time)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT id
-        FROM medication_alerts
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?
-    """, (username, medicine_name, med_time))
+    if not result.data:
 
-    if c.fetchone() is None:
-        c.execute("""
-            INSERT INTO medication_alerts (
-                username,
-                medicine_name,
-                med_time,
-                snooze_count,
-                missed
-            )
-            VALUES (?, ?, ?, 0, 0)
-        """, (
-            username,
-            medicine_name,
-            med_time
-        ))
+        supabase.table("medication_alerts").insert({
 
-    conn.commit()
-    conn.close()
+            "username": username,
+            "medicine_name": medicine_name,
+            "med_time": med_time,
+            "snooze_count": 0,
+            "missed": 0
+
+        }).execute()
 
 def get_alert(
     username,
@@ -780,27 +873,26 @@ def get_alert(
     med_time
 ):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("medication_alerts")
+        .select("snooze_count,missed")
+        .eq("username", username)
+        .eq("medicine_name", medicine_name)
+        .eq("med_time", med_time)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT snooze_count, missed
-        FROM medication_alerts
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?
-    """, (
-        username,
-        medicine_name,
-        med_time
-    ))
+    if result.data:
 
-    data = c.fetchone()
+        row = result.data[0]
 
-    conn.close()
+        return (
+            row["snooze_count"],
+            row["missed"]
+        )
 
-    return data
-
+    return None
 
 def snooze_alert(
     username,
@@ -808,61 +900,98 @@ def snooze_alert(
     med_time
 ):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("medication_alerts")
+        .select("snooze_count")
+        .eq("username", username)
+        .eq("medicine_name", medicine_name)
+        .eq("med_time", med_time)
+        .execute()
+    )
 
-    c.execute("""
-        UPDATE medication_alerts
-        SET snooze_count = snooze_count + 1
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?
-    """, (
-        username,
-        medicine_name,
-        med_time
-    ))
+    if result.data:
 
-    conn.commit()
-    conn.close()
+        current = result.data[0]["snooze_count"]
+
+        supabase.table("medication_alerts").update({
+
+            "snooze_count": current + 1
+
+        }).eq(
+            "username", username
+        ).eq(
+            "medicine_name", medicine_name
+        ).eq(
+            "med_time", med_time
+        ).execute()
 
 
-def mark_missed(username, medicine_name, med_time):
+def mark_missed(
+    username,
+    medicine_name,
+    med_time
+):
 
-    conn = connect()
-    c = conn.cursor()
+    supabase.table("medication_alerts").update({
 
-    c.execute("""
-        UPDATE medication_alerts
-        SET missed = 1
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?
-    """, (
-        username,
-        medicine_name,
-        med_time
-    ))
+        "missed": 1
 
-    conn.commit()
-    conn.close()
+    }).eq(
+        "username", username
+    ).eq(
+        "medicine_name", medicine_name
+    ).eq(
+        "med_time", med_time
+    ).execute()
 
+def add_missed_log(
+    username,
+    med_name,
+    med_time,
+    missed_date
+):
+
+    try:
+
+        supabase.table("medication_log").insert({
+
+            "username": username,
+            "med_name": med_name,
+            "med_time": med_time,
+            "date": str(missed_date),
+            "status": "Missed"
+
+        }).execute()
+
+    except:
+
+        pass
 # ---------------- ALERT LOOKUP ----------------
 
 def get_missed_alerts(username):
-    conn = connect()
-    c = conn.cursor()
 
-    c.execute("""
-        SELECT medicine_name, med_time
-        FROM medication_alerts
-        WHERE username = ?
-        AND missed = 1
-    """, (username,))
+    result = (
+        supabase
+        .table("medication_alerts")
+        .select("medicine_name,med_time")
+        .eq("username", username)
+        .eq("missed", 1)
+        .execute()
+    )
 
-    alerts = c.fetchall()
+    alerts = []
 
-    conn.close()
+    for row in result.data:
+
+        alerts.append(
+
+            (
+                row["medicine_name"],
+                row["med_time"]
+            )
+
+        )
 
     return alerts
 
@@ -872,41 +1001,41 @@ def reset_alert(
     medicine_name,
     med_time
 ):
-    conn = connect()
-    c = conn.cursor()
 
-    c.execute("""
-        DELETE FROM medication_alerts
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?
-    """, (
-        username,
-        medicine_name,
-        med_time
-    ))
-    conn.commit()
-    conn.close()
+    supabase.table("medication_alerts").delete().eq(
+
+        "username", username
+
+    ).eq(
+
+        "medicine_name", medicine_name
+
+    ).eq(
+
+        "med_time", med_time
+
+    ).execute()
 
 
-def get_snooze_count(username, medicine_name, med_time):
-    conn = connect()
-    c = conn.cursor()
+def get_snooze_count(
+    username,
+    medicine_name,
+    med_time
+):
 
-    c.execute("""
-        SELECT snooze_count
-        FROM medication_alerts
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?      
-    """, (username, medicine_name, med_time))
+    result = (
+        supabase
+        .table("medication_alerts")
+        .select("snooze_count")
+        .eq("username", username)
+        .eq("medicine_name", medicine_name)
+        .eq("med_time", med_time)
+        .execute()
+    )
 
-    result = c.fetchone()
+    if result.data:
 
-    conn.close()
-
-    if result:
-        return result[0]
+        return result.data[0]["snooze_count"]
 
     return 0
 
@@ -919,26 +1048,23 @@ def set_next_alarm(
     next_time
 ):
 
-    conn = connect()
-    c = conn.cursor()
+    supabase.table("medication_alerts").update({
 
-    c.execute("""
-        UPDATE medication_alerts
-        SET next_alarm_time = ?
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?
-    """, (
-        next_time,
-        username,
-        medicine_name,
-        med_time
-    ))
-    
-    print("Rows Updated:", c.rowcount)
+        "next_alarm_time": next_time
 
-    conn.commit()
-    conn.close()
+    }).eq(
+
+        "username", username
+
+    ).eq(
+
+        "medicine_name", medicine_name
+
+    ).eq(
+
+        "med_time", med_time
+
+    ).execute()
 
 def sms_already_sent(
     username,
@@ -946,30 +1072,20 @@ def sms_already_sent(
     med_time,
     sms_type
 ):
-    conn = connect()
-    c = conn.cursor()
 
-    c.execute("""
-        SELECT id
-        FROM sms_logs
-        WHERE username=?
-        AND medication=?
-        AND med_time=?
-        AND sms_type=?
-        AND sent_date=?
-    """, (
-        username,
-        medication,
-        med_time,
-        sms_type,
-        str(date.today())
-    ))
+    result = (
+        supabase
+        .table("sms_logs")
+        .select("id")
+        .eq("username", username)
+        .eq("medication", medication)
+        .eq("med_time", med_time)
+        .eq("sms_type", sms_type)
+        .eq("sent_date", str(date.today()))
+        .execute()
+    )
 
-    result = c.fetchone()
-
-    conn.close()
-
-    return result is not None
+    return len(result.data) > 0
 
 def log_sms(
     username,
@@ -977,84 +1093,69 @@ def log_sms(
     med_time,
     sms_type
 ):
-    conn = connect()
-    c = conn.cursor()
 
-    c.execute("""
-        INSERT OR IGNORE INTO sms_logs(
-            username,
-            medication,
-            med_time,
-            sms_type,
-            sent_date
-        )
-        VALUES (?, ?, ?, ?, ?)
-    """, (
+    if not sms_already_sent(
         username,
         medication,
         med_time,
-        sms_type,
-        str(date.today())
-    ))
+        sms_type
+    ):
 
-    conn.commit()
-    conn.close()
+        supabase.table("sms_logs").insert({
+
+            "username": username,
+            "medication": medication,
+            "med_time": med_time,
+            "sms_type": sms_type,
+            "sent_date": str(date.today())
+
+        }).execute()
 
 def get_assigned_physician(patient):
-    conn = connect()
-    c = conn.cursor()
 
-    c.execute("""
-        SELECT assigned_by
-        FROM caregiver_assignment
-        WHERE patient_username = ?
-    """, (patient,))
+    result = (
+        supabase
+        .table("caregiver_assignment")
+        .select("assigned_by")
+        .eq("patient_username", patient)
+        .execute()
+    )
 
-    result = c.fetchone()
+    if result.data:
 
-    conn.close()
+        return result.data[0]["assigned_by"]
 
-    return result[0] if result else None
+    return None
 
 def get_patient_caregiver(patient_username):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("caregiver_assignment")
+        .select("caregiver_username")
+        .eq("patient_username", patient_username)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT caregiver_username
-        FROM caregiver_assignment
-        WHERE patient_username = ?
-    """, (patient_username,))
+    if result.data:
 
-    result = c.fetchone()
+        return result.data[0]["caregiver_username"]
 
-    conn.close()
+    return None   
 
-    return result[0] if result else None    
+def create_emergency_alert(
+    patient_username,
+    provider_username
+):
 
-def create_emergency_alert(patient_username, provider_username):
+    supabase.table("emergency_alerts").insert({
 
-    conn = connect()
-    c = conn.cursor()
+        "patient_username": patient_username,
+        "provider_username": provider_username,
+        "emergency_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "status": "Pending"
 
-    c.execute("""
-        INSERT INTO emergency_alerts
-        (
-            patient_username,
-            provider_username,
-            emergency_time,
-            status
-        )
-        VALUES (?, ?, ?, 'Pending')
-    """, (
-        patient_username,
-        provider_username,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-
-    conn.commit()
-    conn.close()
+    }).execute()
 
 from datetime import datetime, timedelta
 
@@ -1123,33 +1224,342 @@ def calculate_patient_statistics(username):
 
     return stats    
 
+def calculate_adherence_summary(username):
+
+    meds = get_medications(username)
+
+    logs = get_user_logs(username)
+
+
+    today = date.today()
+
+    current_time = datetime.now()
+
+
+    # ==========================
+    # TODAY COUNTERS
+    # ==========================
+
+    today_total = 0
+
+    today_taken = 0
+
+    today_delayed = 0
+
+    today_missed = 0
+
+    today_pending = 0
+
+
+
+    # ==========================
+    # OVERALL COUNTERS
+    # ==========================
+
+    overall_total = 0
+
+    overall_taken = 0
+
+    overall_delayed = 0
+
+    overall_missed = 0
+
+
+
+    for med in meds:
+
+
+        (
+            med_name,
+            med_time,
+            dosage,
+            instructions,
+            start_date,
+            end_date,
+            start_time,
+            frequency_hours,
+            purpose,
+            how_to_take,
+            side_effects,
+            reminders
+
+        ) = med
+
+
+
+        # Generate medication schedule
+
+        if frequency_hours:
+
+
+            dose_schedule = generate_dose_schedule(
+                start_date,
+                end_date,
+                start_time,
+                frequency_hours
+            )
+
+
+        else:
+
+
+            dose_schedule = [
+
+                (
+                    med_time,
+
+                    datetime.strptime(
+                        f"{start_date} {med_time}",
+                        "%Y-%m-%d %I:%M %p"
+                    )
+
+                )
+
+            ]
+
+
+
+        for dose_time, dose_datetime in dose_schedule:
+
+
+
+            # Ignore doses outside treatment period
+
+            if dose_datetime.date() > today:
+
+                continue
+
+
+
+            # ==========================
+            # FIND MEDICATION LOG
+            # ==========================
+
+
+            log_found = next(
+
+                (
+
+                    log for log in logs
+
+                    if log[0] == med_name
+
+                    and log[1] == dose_time
+
+                    and log[2] == str(dose_datetime.date())
+
+                ),
+
+                None
+
+            )
+
+
+
+            # ==========================
+            # OVERALL ADHERENCE
+            # ==========================
+
+
+            overall_total += 1
+
+
+
+            if log_found:
+
+
+                if log_found[3] == "Taken":
+
+                    overall_taken += 1
+
+
+
+                elif log_found[3] == "Delayed":
+
+                    overall_delayed += 1
+
+
+
+                elif log_found[3] in [
+                    "Missed",
+                    "Missed Reviewed"
+                ]:
+
+                    overall_missed += 1
+
+
+
+            else:
+
+
+                if current_time > dose_datetime + timedelta(minutes=30):
+
+                    overall_missed += 1
+
+
+
+            # ==========================
+            # TODAY ONLY
+            # ==========================
+
+
+            if dose_datetime.date() != today:
+
+                continue
+
+
+
+            today_total += 1
+
+
+
+            if log_found:
+
+
+                if log_found[3] == "Taken":
+
+                    today_taken += 1
+
+
+
+                elif log_found[3] == "Delayed":
+
+                    today_delayed += 1
+
+
+
+                elif log_found[3] in [
+                    "Missed",
+                    "Missed Reviewed"
+                ]:
+
+                    today_missed += 1
+
+
+
+            else:
+
+
+                if current_time > dose_datetime + timedelta(minutes=30):
+
+                    today_missed += 1
+
+
+
+                else:
+
+                    today_pending += 1
+
+
+
+    # ==========================
+    # ADHERENCE CALCULATION
+    # ==========================
+
+
+    if overall_total > 0:
+
+        overall_adherence = round(
+            (
+                (overall_taken + overall_delayed)
+                /
+                overall_total
+            )
+            * 100
+        )
+
+    else:
+
+        overall_adherence = 0
+
+
+
+    if today_total > 0:
+
+        today_adherence = round(
+            (
+                (today_taken + today_delayed)
+                /
+                today_total
+            )
+            * 100
+        )
+
+    else:
+
+        today_adherence = 0
+
+
+
+    return {
+
+
+        # TODAY
+
+        "today_total": today_total,
+
+        "today_taken": today_taken,
+
+        "today_delayed": today_delayed,
+
+        "today_missed": today_missed,
+
+        "today_pending": today_pending,
+
+        "today_adherence": today_adherence,
+
+
+
+        # OVERALL
+
+        "overall_total": overall_total,
+
+        "overall_taken": overall_taken,
+
+        "overall_delayed": overall_delayed,
+
+        "overall_missed": overall_missed,
+
+        "overall_adherence": overall_adherence
+
+    }
+
+def acknowledge_emergency(alert_id):
+
+    result = (
+        supabase
+        .table("emergency_alerts")
+        .update({
+            "status": "Acknowledged"
+        })
+        .eq(
+            "id",
+            alert_id
+        )
+        .execute()
+    )
+
+    return result
+
 def get_next_alarm(
     username,
     medicine_name,
     med_time
 ):
 
-    conn = connect()
-    c = conn.cursor()
+    result = (
+        supabase
+        .table("medication_alerts")
+        .select("next_alarm_time")
+        .eq("username", username)
+        .eq("medicine_name", medicine_name)
+        .eq("med_time", med_time)
+        .execute()
+    )
 
-    c.execute("""
-        SELECT next_alarm_time
-        FROM medication_alerts
-        WHERE username = ?
-        AND medicine_name = ?
-        AND med_time = ?
-    """, (
-        username,
-        medicine_name,
-        med_time
-    ))
+    if result.data:
 
-    result = c.fetchone()
-
-    conn.close()
-
-    if result:
-        return result[0]
+        return result.data[0]["next_alarm_time"]
 
     return None
     
