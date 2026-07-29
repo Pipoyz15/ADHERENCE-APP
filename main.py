@@ -3,7 +3,9 @@ import streamlit as st
 import time
 import base64
 from sms_service import send_sms
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
+PH_TIMEZONE = ZoneInfo("Asia/Manila")
 from plyer import notification
 from streamlit_autorefresh import st_autorefresh
 
@@ -34,6 +36,7 @@ from database import (
     get_provider_emergencies,
     resolve_emergency,
     get_caregiver_emergencies,
+    get_all_missed_alerts,
     log_sms,
     calculate_today_adherence,
     calculate_treatment_adherence,
@@ -50,6 +53,7 @@ from database import (
     acknowledge_missed_alert,
     get_patient_emergency_alerts,
     acknowledge_emergency,
+    check_missed_medications,
     calculate_adherence_summary
 
 )
@@ -424,7 +428,7 @@ def get_risk_label(adherence):
 def send_notification(med_name):
     notification.notify(
         title="💊 Medication Reminder",
-        message=f"Time to take {med_name} at {datetime.now().strftime('%H:%M:%S')}",
+        message=f"Time to take {med_name} at {datetime.now(PH_TIMEZONE).strftime('%H:%M:%S')}",
         app_name="Adherence App",
         timeout=10
     )
@@ -458,7 +462,7 @@ def generate_times(
 # ---------------- DASHBOARD ----------------
 def dashboard():
     role = st.session_state.role
-    today = str(date.today())
+    today = str(datetime.now(PH_TIMEZONE).date())
     col1, col2, col3 = st.columns([1,1,1])
 
     with col2:
@@ -532,7 +536,7 @@ def dashboard():
         overall_delayed = 0
         overall_total = 0
 
-        current_time = datetime.now()
+        current_time = datetime.now(PH_TIMEZONE)
 
         for (
             med,
@@ -566,6 +570,8 @@ def dashboard():
                         datetime.strptime(
                             f"{start_date} {time}",
                             "%Y-%m-%d %I:%M %p"
+                        ).replace(
+                            tzinfo=PH_TIMEZONE
                         )
                     )
                 ]
@@ -604,7 +610,7 @@ def dashboard():
         for log in logs:
 
             if (
-                log[2] == str(date.today())
+                log[2] == str(datetime.now(PH_TIMEZONE).date())
                 and log[3] in ["Taken", "Delayed"]
             ):
                 today_logs.append((log[0], log[1]))
@@ -623,7 +629,7 @@ def dashboard():
 
         upcoming = 0
 
-        current_time = datetime.now()
+        current_time = datetime.now(PH_TIMEZONE)
 
         for (
             med,
@@ -657,6 +663,8 @@ def dashboard():
                         datetime.strptime(
                             f"{start_date} {time}",
                             "%Y-%m-%d %I:%M %p"
+                        ).replace(
+                            tzinfo=PH_TIMEZONE
                         )
                     )
                 ]
@@ -665,7 +673,7 @@ def dashboard():
 
 
                 # TODAY'S DOSES
-                if dose_datetime.date() == date.today():
+                if dose_datetime.date() == datetime.now(PH_TIMEZONE).date():
 
                     total_doses += 1
 
@@ -675,7 +683,7 @@ def dashboard():
                             l for l in logs
                             if l[0] == med
                             and l[1] == dose_time
-                            and l[2] == str(date.today())
+                            and l[2] == str(datetime.now(PH_TIMEZONE).date())
                         ),
                         None
                     )
@@ -716,7 +724,7 @@ def dashboard():
 
 
                 # FUTURE DOSES UNTIL END DATE
-                elif dose_datetime.date() > date.today():
+                elif dose_datetime.date() > datetime.now(PH_TIMEZONE).date():
 
                     upcoming += 1
 
@@ -755,13 +763,13 @@ def dashboard():
             if caregiver:
 
                 st.success(
-                    f"🚨 Emergency alert sent to caregiver: {caregiver}"
+                    f"🚨 Emergency alert sent to caregiver and healthcare provider."
                 )
 
             else:
 
-                st.warning(
-                    "⚠ No caregiver assigned. Emergency recorded."
+                st.success(
+                    f"🚨 Emergency alert sent to healthcare provider."
                 )
 
 
@@ -793,7 +801,7 @@ def dashboard():
                 ).date()
 
                 days_left = max(
-                    (end - date.today()).days,
+                    (end - datetime.now(PH_TIMEZONE).date()).days,
                     0
                 )
 
@@ -885,8 +893,10 @@ def dashboard():
                         (
                             med_time,
                             datetime.strptime(
-                                f"{start_date} {med_time}",
+                                f"{start_date} {time}",
                                 "%Y-%m-%d %I:%M %p"
+                            ).replace(
+                                tzinfo=PH_TIMEZONE
                             )
                         )
                     ]
@@ -897,7 +907,7 @@ def dashboard():
                 for dose_time, dose_datetime in dose_schedule:
                 # Show only today's doses
 
-                    if dose_datetime.date() != date.today():
+                    if dose_datetime.date() != datetime.now(PH_TIMEZONE).date():
                         continue
              
 
@@ -911,7 +921,7 @@ def dashboard():
                         None
                     )
 
-                    current_time = datetime.now()
+                    current_time = datetime.now(PH_TIMEZONE)
 
                     missed_time = dose_datetime + timedelta(minutes=30)
 
@@ -1262,7 +1272,7 @@ def dashboard():
                                         )
 
                                         next_time = (
-                                            datetime.now() +
+                                            datetime.now(PH_TIMEZONE) +
                                             timedelta(minutes=5)
                                         ).strftime("%I:%M %p")
 
@@ -1294,7 +1304,7 @@ def dashboard():
         overall_total = 0
 
 
-        current_time = datetime.now()
+        current_time = datetime.now(PH_TIMEZONE)
 
 
         for (
@@ -1330,6 +1340,8 @@ def dashboard():
                         datetime.strptime(
                             f"{start_date} {time}",
                             "%Y-%m-%d %I:%M %p"
+                        ).replace(
+                            tzinfo=PH_TIMEZONE
                         )
                     )
                 ]
@@ -1369,7 +1381,7 @@ def dashboard():
 
                 # TODAY COUNTER
 
-                if dose_datetime.date() == date.today():
+                if dose_datetime.date() == datetime.now(PH_TIMEZONE).date():
 
                     today_total += 1
 
@@ -1379,7 +1391,7 @@ def dashboard():
                             l for l in logs
                             if l[0] == med
                             and l[1] == dose_time
-                            and l[2] == str(date.today())
+                            and l[2] == str(datetime.now(PH_TIMEZONE).date())
                         ),
                         None
                     )
@@ -1505,7 +1517,7 @@ def dashboard():
         medicines = get_medications(selected_patient)
         logs = get_user_logs(selected_patient)
 
-        today = date.today()
+        today = datetime.now(PH_TIMEZONE).date()
 
         overall_taken = 0
         overall_delayed = 0
@@ -1519,7 +1531,7 @@ def dashboard():
         remaining_doses = 0
 
 
-        current_time = datetime.now()
+        current_time = datetime.now(PH_TIMEZONE)
 
 
         for (
@@ -1555,6 +1567,8 @@ def dashboard():
                         datetime.strptime(
                             f"{start_date} {time}",
                             "%Y-%m-%d %I:%M %p"
+                        ).replace(
+                            tzinfo=PH_TIMEZONE
                         )
                     )
                 ]
@@ -1603,7 +1617,7 @@ def dashboard():
                 # TODAY'S ADHERENCE
                 # ==========================
 
-                if dose_datetime.date() == date.today():
+                if dose_datetime.date() == datetime.now(PH_TIMEZONE).date():
 
                     today_total += 1
 
@@ -1613,7 +1627,7 @@ def dashboard():
                             l for l in logs
                             if l[0] == med
                             and l[1] == dose_time
-                            and l[2] == str(date.today())
+                            and l[2] == str(datetime.now(PH_TIMEZONE).date())
                         ),
                         None
                     )
@@ -1741,26 +1755,30 @@ def dashboard():
         # ===========================
 
         st.subheader("🚨 Alerts")
+        
+        check_missed_medications(
+            selected_patient
+        )
 
 
         # ===========================
         # LOAD MISSED ALERTS
         # ===========================
 
-        missed_alerts = get_pending_missed_alerts(
+        all_missed_alerts = get_all_missed_alerts(
             selected_patient
         )
 
 
         missed_count = len(
-            missed_alerts
+            all_missed_alerts
         )
 
 
         snoozed_count = 0
 
 
-        current_time = datetime.now()
+        current_time = datetime.now(PH_TIMEZONE)
 
 
 
@@ -1821,6 +1839,8 @@ def dashboard():
                         datetime.strptime(
                             f"{start_date} {time}",
                             "%Y-%m-%d %I:%M %p"
+                        ).replace(
+                            tzinfo=PH_TIMEZONE
                         )
                     )
                 ]
@@ -1882,45 +1902,6 @@ def dashboard():
                     ]:
 
                         continue
-
-
-
-                    # Already missed medication
-                    elif log_found[3] in [
-                        "Missed",
-                        "Missed Reviewed"
-                    ]:
-
-                        missed_count += 1
-
-
-
-                # No log yet, detect missed dynamically
-
-                else:
-
-
-                    if current_time > dose_datetime + timedelta(minutes=30):
-
-
-                        missed_count += 1
-
-
-                        add_missed_log(
-                            selected_patient,
-                            med,
-                            dose_time,
-                            dose_datetime.date()
-                        )
-
-
-                        create_missed_alert(
-                            selected_patient,
-                            med,
-                            dose_time,
-                            dose_datetime.date()
-                        )
-
 
 
 
@@ -2125,6 +2106,8 @@ def dashboard():
                         datetime.strptime(
                             f"{start_date} {time}",
                             "%Y-%m-%d %I:%M %p"
+                        ).replace(
+                            tzinfo=PH_TIMEZONE
                         )
                     )
                 ]
@@ -2193,14 +2176,14 @@ def dashboard():
                                 )
 
 
-                            elif datetime.now() > dose_datetime + timedelta(minutes=30):
+                            elif datetime.now(PH_TIMEZONE) > dose_datetime + timedelta(minutes=30):
 
                                 st.error(
                                     "❌ Medication Missed"
                                 )
 
 
-                            elif datetime.now() >= dose_datetime:
+                            elif datetime.now(PH_TIMEZONE) >= dose_datetime:
 
                                 st.warning(
                                     "⏳ Pending Confirmation"
@@ -2408,14 +2391,13 @@ def dashboard():
 
             pending_emergencies = len([
                 e for e in emergencies
-                if e[3] == "Pending"
+                if e["status"] == "Pending"
             ])
 
             scheduled_doses = 0
 
-            today = date.today()
+            today = datetime.now(PH_TIMEZONE).date()
 
-            today = date.today()
 
             scheduled_doses = 0
 
@@ -2511,8 +2493,8 @@ def dashboard():
             meds = get_medications(selected_patient)
             logs = get_user_logs(selected_patient)
 
-            today = date.today()
-            current_time = datetime.now()  
+            today = datetime.now(PH_TIMEZONE).date()
+            current_time = datetime.now(PH_TIMEZONE)
             schedule_rows = []
 
             summary = calculate_adherence_summary(
@@ -2559,9 +2541,11 @@ def dashboard():
                         (
                             med_time,
                             datetime.strptime(
-                                f"{start_date} {med_time}",
-                                "%Y-%m-%d %I:%M %p"
-                            )
+                            f"{start_date} {time}",
+                            "%Y-%m-%d %I:%M %p"
+                        ).replace(
+                            tzinfo=PH_TIMEZONE
+                        )
                         )
                     ]
 
@@ -2700,7 +2684,7 @@ def dashboard():
 
                             days_left = (
                                 datetime.strptime(end_date,"%Y-%m-%d").date()
-                                - date.today()
+                                - datetime.now(PH_TIMEZONE).date()
                             ).days
 
                             if days_left >= 0:
@@ -2918,7 +2902,7 @@ def dashboard():
 
             schedule_rows = []
 
-            current_time = datetime.now()
+            current_time = datetime.now(PH_TIMEZONE)
 
             for (
                 med_name,
@@ -3008,7 +2992,7 @@ def dashboard():
             meds = get_medications(selected_patient)
             logs = get_user_logs(selected_patient)
 
-            today = date.today()
+            today = datetime.now(PH_TIMEZONE).date()
             today_str = str(today)
 
             today_logs = [
@@ -3119,7 +3103,7 @@ def dashboard():
 
             schedule_rows = []
 
-            current_time = datetime.now()
+            current_time = datetime.now(PH_TIMEZONE)
 
             for (
                 med_name,
@@ -3338,29 +3322,88 @@ def dashboard():
 
             st.subheader("🚨 Emergency Alerts")
 
+
             emergencies = get_provider_emergencies(
                 st.session_state.current_user
             )
 
+
             if not emergencies:
 
-                st.success("✅ No emergency alerts.")
+                st.success(
+                    "✅ No emergency alerts."
+                )
+
 
             else:
 
-                for patient, caregiver, emergency_time, status in emergencies:
+                for emergency in emergencies:
+
+                    patient = emergency["patient"]
+
+                    caregiver = emergency["caregiver"]
+
+                    patient_phone = emergency["patient_phone"]
+
+                    caregiver_phone = emergency["caregiver_phone"]
+
+                    emergency_time = emergency["emergency_time"]
+
+                    status = emergency["status"]    
+
 
                     with st.container(border=True):
 
-                        st.error(f"🚨 Emergency from: {patient}")
-
-                        st.write(
-                            f"👤 Caregiver: {caregiver if caregiver else 'None'}"
+                        st.error(
+                            f"🚨 Emergency Alert"
                         )
 
-                        st.write(f"🕒 {emergency_time}")
 
-                        st.write(f"📌 Status: {status}")
+                        st.subheader(
+                            f"👤 Patient: {patient}"
+                        )
+
+
+                        col1, col2 = st.columns(2)
+
+
+                        with col1:
+
+                            st.write(
+                                f"👥 Caregiver: {caregiver if caregiver else 'None'}"
+                            )
+
+                            st.write(
+                                f"📞 Patient Contact: {patient_phone if patient_phone else 'None'}"
+                            )
+
+
+                        with col2:
+
+                            st.write(
+                                f"📞 Caregiver Contact: {caregiver_phone if caregiver_phone else 'None'}"
+                            )
+
+                            st.write(
+                                f"🕒 Emergency Time:"
+                            )
+
+                            st.write(
+                                emergency_time
+                            )
+
+
+                        st.divider()
+
+
+                        st.write(
+                            f"📌 Status: {status}"
+                        )
+
+
+                        st.divider()
+
+
 
                         if status == "Pending":
 
@@ -3374,13 +3417,11 @@ def dashboard():
                                     emergency_time
                                 )
 
-                                st.success("Emergency resolved.")
+                                st.success(
+                                    "Emergency resolved."
+                                )
 
                                 st.rerun()
-
-                        else:
-
-                            st.success("✅ Already Resolved")
 
         # ====================================
         # EMERGENCY ALERTS

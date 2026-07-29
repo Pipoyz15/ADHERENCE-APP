@@ -1,5 +1,7 @@
 import streamlit as st
 from supabase import create_client
+from zoneinfo import ZoneInfo
+PH_TIMEZONE = ZoneInfo("Asia/Manila")
 
 
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
@@ -11,8 +13,7 @@ supabase = create_client(
     SUPABASE_URL,
     SUPABASE_KEY
 )
-
-from datetime import date
+from datetime import datetime, timedelta, date
 from sms_service import send_sms
 
 
@@ -84,78 +85,136 @@ def get_caregivers():
     )
 
     return [(r["username"],) for r in result.data]
-
 def assign_caregiver(caregiver, patient, physician):
 
-    if caregiver is None:
+    # =========================
+    # ALWAYS ASSIGN PROVIDER
+    # =========================
 
-        supabase.table("caregiver_assignment").delete().eq(
-            "patient_username",
-            patient
-        ).execute()
+    supabase.table(
+        "provider_assignment"
+    ).delete().eq(
+        "patient_username",
+        patient
+    ).execute()
 
-    else:
 
-        # Delete old assignment first
-        supabase.table("caregiver_assignment").delete().eq(
-            "patient_username",
-            patient
-        ).execute()
+    supabase.table(
+        "provider_assignment"
+    ).insert({
 
-        # Insert new assignment
-        supabase.table("caregiver_assignment").insert({
+        "patient_username": patient,
+
+        "provider_username": physician
+
+    }).execute()
+
+
+
+    # =========================
+    # OPTIONAL CAREGIVER
+    # =========================
+
+    supabase.table(
+        "caregiver_assignment"
+    ).delete().eq(
+        "patient_username",
+        patient
+    ).execute()
+
+
+    if caregiver:
+
+
+        supabase.table(
+            "caregiver_assignment"
+        ).insert({
 
             "caregiver_username": caregiver,
+
             "patient_username": patient,
+
             "assigned_by": physician
 
         }).execute()
 
-from datetime import datetime
+from datetime import datetime, timedelta, date
 
 def send_emergency(patient_username):
 
-    caregiver = get_patient_caregiver(patient_username)
+    caregiver = get_patient_caregiver(
+        patient_username
+    )
 
-    provider_username = get_assigned_physician(patient_username)
+    provider = get_assigned_physician(
+        patient_username
+    )
 
-    supabase.table("emergency_alerts").insert({
+    emergency_time = datetime.now(
+        PH_TIMEZONE
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
+    # Save emergency alert
+    supabase.table(
+        "emergency_alerts"
+    ).insert({
 
         "patient_username": patient_username,
-        "provider_username": provider_username,
-        "emergency_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+
+        "provider_username": provider,
+
+        "emergency_time": emergency_time,
+
         "status": "Pending"
 
     }).execute()
 
-    # ---------- SMS ----------
 
-    patient_phone = get_user_phone(patient_username)
 
-    caregiver_phone = get_caregiver_phone(patient_username)
+    message = (
+        f"🚨 EMERGENCY ALERT\n\n"
+        f"Patient {patient_username} "
+        f"requires immediate assistance."
+    )
 
-    provider_phone = get_provider_phone(patient_username)
 
-    if patient_phone:
+    # -------------------------
+    # Notify caregiver if any
+    # -------------------------
 
-        send_sms(
-            patient_phone,
-            "🚨 Emergency alert has been activated."
+    if caregiver:
+
+        caregiver_phone = get_caregiver_phone(
+            patient_username
         )
 
-    if caregiver_phone:
+        if caregiver_phone:
 
-        send_sms(
-            caregiver_phone,
-            f"🚨 {patient_username} activated Emergency SOS."
-        )
+            send_sms(
+                caregiver_phone,
+                message
+            )
+
+
+    # -------------------------
+    # Always notify provider
+    # -------------------------
+
+    provider_phone = get_user_phone(
+        provider
+    )
+
 
     if provider_phone:
 
         send_sms(
             provider_phone,
-            f"🚨 Emergency alert from patient {patient_username}."
+            message
         )
+
 
     return caregiver
 
@@ -217,6 +276,25 @@ def get_assigned_caregiver(patient_username):
 
     return get_patient_caregiver(patient_username)
 
+def get_assigned_patient(caregiver_username):
+
+    result = (
+        supabase
+        .table("caregiver_assignment")
+        .select("patient_username")
+        .eq(
+            "caregiver_username",
+            caregiver_username
+        )
+        .execute()
+    )
+
+    if result.data:
+
+        return result.data[0]["patient_username"]
+
+    return None
+
 def get_phone_number(username):
 
     return get_user_phone(username)
@@ -243,40 +321,122 @@ def get_patient_emergency_alerts(patient_username):
 
     return result.data
 
+
 def get_provider_emergencies(provider_username):
 
     emergency_result = (
         supabase
         .table("emergency_alerts")
         .select("*")
-        .eq("provider_username", provider_username)
-        .order("emergency_time", desc=True)
+        .eq(
+            "provider_username",
+            provider_username
+        )
+        .eq(
+            "status",
+            "Pending"
+        )
+        .order(
+            "emergency_time",
+            desc=True
+        )
         .execute()
     )
 
+
     emergencies = []
 
+
     for alert in emergency_result.data:
+
+
+        patient = alert["patient_username"]
+
 
         caregiver_result = (
             supabase
             .table("caregiver_assignment")
             .select("caregiver_username")
-            .eq("patient_username", alert["patient_username"])
+            .eq(
+                "patient_username",
+                patient
+            )
             .execute()
         )
 
+
         caregiver = None
 
+
         if caregiver_result.data:
+
             caregiver = caregiver_result.data[0]["caregiver_username"]
 
-        emergencies.append((
-            alert["patient_username"],
-            caregiver,
-            alert["emergency_time"],
-            alert["status"]
-        ))
+
+
+        # get patient phone
+
+        patient_phone = None
+
+        patient_result = (
+            supabase
+            .table("users")
+            .select("phone_number")
+            .eq(
+                "username",
+                patient
+            )
+            .execute()
+        )
+
+
+        if patient_result.data:
+
+            patient_phone = patient_result.data[0]["phone_number"]
+
+
+
+        # get caregiver phone
+
+        caregiver_phone = None
+
+
+        if caregiver:
+
+            caregiver_result = (
+                supabase
+                .table("users")
+                .select("phone_number")
+                .eq(
+                    "username",
+                    caregiver
+                )
+                .execute()
+            )
+
+
+            if caregiver_result.data:
+
+                caregiver_phone = caregiver_result.data[0]["phone_number"]
+
+
+
+        emergencies.append({
+
+            "patient": patient,
+
+            "caregiver": caregiver,
+
+            "patient_phone": patient_phone,
+
+            "caregiver_phone": caregiver_phone,
+
+            "emergency_time": alert["emergency_time"],
+
+            "status": alert["status"]
+
+        })
+
 
     return emergencies
 
@@ -376,18 +536,42 @@ def resolve_emergency(
 
     ).execute()
     
-def get_assigned_patient(caregiver):
+def get_assigned_physician(patient_username):
 
     result = (
         supabase
-        .table("caregiver_assignment")
-        .select("patient_username")
-        .eq("caregiver_username", caregiver)
+        .table("provider_assignment")
+        .select("*")
         .execute()
     )
 
-    if result.data:
-        return result.data[0]["patient_username"]
+
+    print("ALL PROVIDER ASSIGNMENTS:")
+    print(result.data)
+
+
+    print("SEARCH VALUE:")
+    print(repr(patient_username))
+
+
+    for row in result.data:
+
+        print(
+            "CHECK:",
+            repr(row["patient_username"])
+        )
+
+        if row["patient_username"] == patient_username:
+
+            print(
+                "FOUND PROVIDER:",
+                row["provider_username"]
+            )
+
+            return row["provider_username"]
+
+
+    print("NO MATCH FOUND")
 
     return None
 
@@ -396,7 +580,7 @@ def calculate_treatment_adherence(username):
     medicines = get_medications(username)
     logs = get_user_logs(username)
 
-    current_time = datetime.now()
+    current_time = datetime.now(PH_TIMEZONE)
 
     overall_total = 0
     completed = 0
@@ -435,6 +619,8 @@ def calculate_treatment_adherence(username):
                     datetime.strptime(
                         f"{start_date} {time}",
                         "%Y-%m-%d %I:%M %p"
+                    ).replace(
+                        tzinfo=PH_TIMEZONE
                     )
                 )
             ]
@@ -486,7 +672,7 @@ def calculate_today_adherence(username):
     medicines = get_medications(username)
     logs = get_user_logs(username)
 
-    today = date.today()
+    today = datetime.now(PH_TIMEZONE).date()
 
     today_total = 0
     today_taken = 0
@@ -525,6 +711,8 @@ def calculate_today_adherence(username):
                     datetime.strptime(
                         f"{start_date} {time}",
                         "%Y-%m-%d %I:%M %p"
+                    ).replace(
+                        tzinfo=PH_TIMEZONE
                     )
                 )
             ]
@@ -779,7 +967,7 @@ def mark_med_done(
         .eq("username", username)
         .eq("med_name", med_name)
         .eq("med_time", med_time)
-        .eq("date", str(date.today()))
+        .eq("date", str(datetime.now(PH_TIMEZONE).date()))
         .execute()
     )
 
@@ -803,7 +991,7 @@ def mark_med_done(
             "username": username,
             "med_name": med_name,
             "med_time": med_time,
-            "date": str(date.today()),
+            "date": str(datetime.now(PH_TIMEZONE).date()),
             "dosage": None,
             "instructions": None,
             "status": status
@@ -866,6 +1054,21 @@ def create_alert(
             "missed": 0
 
         }).execute()
+
+def get_all_missed_alerts(username):
+
+    result = (
+        supabase
+        .table("missed_alerts")
+        .select("*")
+        .eq(
+            "username",
+            username
+        )
+        .execute()
+    )
+
+    return result.data
 
 def get_alert(
     username,
@@ -968,6 +1171,106 @@ def add_missed_log(
 
         pass
 # ---------------- ALERT LOOKUP ----------------
+
+def check_missed_medications(username):
+
+    medicines = get_medications(username)
+
+    current_time = datetime.now(PH_TIMEZONE)
+
+
+    for (
+        med,
+        time,
+        dosage,
+        instructions,
+        start_date,
+        end_date,
+        start_time,
+        frequency_hours,
+        purpose,
+        how_to_take,
+        side_effects,
+        reminders
+    ) in medicines:
+
+
+        if frequency_hours:
+
+            dose_schedule = generate_dose_schedule(
+                start_date,
+                end_date,
+                start_time,
+                frequency_hours
+            )
+
+        else:
+
+            dose_schedule = [
+                (
+                    time,
+                    datetime.strptime(
+                        f"{start_date} {time}",
+                        "%Y-%m-%d %I:%M %p"
+                    ).replace(
+                        tzinfo=PH_TIMEZONE
+                    )
+                )
+            ]
+
+
+        for dose_time, dose_datetime in dose_schedule:
+
+
+            # Only check finished doses
+
+            if current_time <= dose_datetime + timedelta(minutes=30):
+
+                continue
+
+
+            logs = get_user_logs(username)
+
+
+            log_found = next(
+                (
+                    l for l in logs
+                    if l[0] == med
+                    and l[1] == dose_time
+                    and l[2] == str(dose_datetime.date())
+                ),
+                None
+            )
+
+
+            # Already taken/delayed
+
+            if log_found:
+
+                if log_found[3] in [
+                    "Taken",
+                    "Delayed"
+                ]:
+
+                    continue
+
+
+            # Create missed record
+
+            add_missed_log(
+                username,
+                med,
+                dose_time,
+                dose_datetime.date()
+            )
+
+
+            create_missed_alert(
+                username,
+                med,
+                dose_time,
+                dose_datetime.date()
+            )
 
 def get_missed_alerts(username):
 
@@ -1081,7 +1384,7 @@ def sms_already_sent(
         .eq("medication", medication)
         .eq("med_time", med_time)
         .eq("sms_type", sms_type)
-        .eq("sent_date", str(date.today()))
+        .eq("sent_date", str(datetime.now(PH_TIMEZONE).date()))
         .execute()
     )
 
@@ -1107,25 +1410,10 @@ def log_sms(
             "medication": medication,
             "med_time": med_time,
             "sms_type": sms_type,
-            "sent_date": str(date.today())
+            "sent_date": str(datetime.now(PH_TIMEZONE).date())
 
         }).execute()
 
-def get_assigned_physician(patient):
-
-    result = (
-        supabase
-        .table("caregiver_assignment")
-        .select("assigned_by")
-        .eq("patient_username", patient)
-        .execute()
-    )
-
-    if result.data:
-
-        return result.data[0]["assigned_by"]
-
-    return None
 
 def get_patient_caregiver(patient_username):
 
@@ -1152,35 +1440,37 @@ def create_emergency_alert(
 
         "patient_username": patient_username,
         "provider_username": provider_username,
-        "emergency_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "emergency_time": datetime.now(PH_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
         "status": "Pending"
 
     }).execute()
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
-def generate_dose_schedule(start_date, end_date, start_time, frequency_hours):
-    """
-    Generates every medication dose between the start and end dates.
-    Returns:
-        [
-            ("08:00 AM", datetime_object),
-            ("02:00 PM", datetime_object),
-            ...
-        ]
-    """
+def generate_dose_schedule(
+    start_date,
+    end_date,
+    start_time,
+    frequency_hours
+):
 
     schedule = []
 
     current = datetime.strptime(
         f"{start_date} {start_time}",
         "%Y-%m-%d %I:%M %p"
+    ).replace(
+        tzinfo=PH_TIMEZONE
     )
+
 
     end = datetime.strptime(
         f"{end_date} 11:59 PM",
         "%Y-%m-%d %I:%M %p"
+    ).replace(
+        tzinfo=PH_TIMEZONE
     )
+
 
     while current <= end:
 
@@ -1191,10 +1481,12 @@ def generate_dose_schedule(start_date, end_date, start_time, frequency_hours):
             )
         )
 
-        current += timedelta(hours=frequency_hours)
+        current += timedelta(
+            hours=frequency_hours
+        )
+
 
     return schedule
-
 # ==========================================
 # PATIENT STATISTICS
 # ==========================================
@@ -1204,8 +1496,8 @@ def calculate_patient_statistics(username):
     meds = get_medications(username)
     logs = get_user_logs(username)
 
-    today = date.today()
-    current_time = datetime.now()
+    today = datetime.now(PH_TIMEZONE).date()
+    current_time = datetime.now(PH_TIMEZONE)
 
     stats = {
 
@@ -1231,9 +1523,9 @@ def calculate_adherence_summary(username):
     logs = get_user_logs(username)
 
 
-    today = date.today()
+    today = datetime.now(PH_TIMEZONE).date()
 
-    current_time = datetime.now()
+    current_time = datetime.now(PH_TIMEZONE)
 
 
     # ==========================
@@ -1311,6 +1603,8 @@ def calculate_adherence_summary(username):
                     datetime.strptime(
                         f"{start_date} {med_time}",
                         "%Y-%m-%d %I:%M %p"
+                    ).replace(
+                        tzinfo=PH_TIMEZONE
                     )
 
                 )
