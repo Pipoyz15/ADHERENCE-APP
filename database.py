@@ -142,6 +142,7 @@ from datetime import datetime, timedelta, date
 
 def send_emergency(patient_username):
 
+    # Get caregiver and provider
     caregiver = get_patient_caregiver(
         patient_username
     )
@@ -150,6 +151,8 @@ def send_emergency(patient_username):
         patient_username
     )
 
+
+    # Philippine time
     emergency_time = datetime.now(
         PH_TIMEZONE
     ).strftime(
@@ -176,20 +179,23 @@ def send_emergency(patient_username):
 
     message = (
         f"🚨 EMERGENCY ALERT\n\n"
-        f"Patient {patient_username} "
-        f"requires immediate assistance."
+        f"Patient: {patient_username}\n"
+        f"Time: {emergency_time}\n\n"
+        f"Immediate assistance is required."
     )
 
 
-    # -------------------------
-    # Notify caregiver if any
-    # -------------------------
+
+    # ==========================
+    # Notify caregiver if exists
+    # ==========================
 
     if caregiver:
 
         caregiver_phone = get_caregiver_phone(
             patient_username
         )
+
 
         if caregiver_phone:
 
@@ -199,21 +205,24 @@ def send_emergency(patient_username):
             )
 
 
-    # -------------------------
+
+    # ==========================
     # Always notify provider
-    # -------------------------
+    # ==========================
 
-    provider_phone = get_user_phone(
-        provider
-    )
+    if provider:
 
-
-    if provider_phone:
-
-        send_sms(
-            provider_phone,
-            message
+        provider_phone = get_user_phone(
+            provider
         )
+
+
+        if provider_phone:
+
+            send_sms(
+                provider_phone,
+                message
+            )
 
 
     return caregiver

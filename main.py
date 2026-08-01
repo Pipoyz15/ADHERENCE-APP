@@ -959,57 +959,6 @@ def dashboard():
 
                         status = "missed"
 
-                        sms_key = f"{st.session_state.current_user}_{med}_{dose_time}_MISSED"
-
-                        if not sms_already_sent(
-                            st.session_state.current_user,
-                            med,
-                            dose_time,
-                            "MISSED"
-                        ):
-
-                            patient_phone = get_user_phone(
-                                st.session_state.current_user
-                            )
-
-                            caregiver_phone = get_caregiver_phone(
-                                st.session_state.current_user
-                            )
-
-                            provider_phone = get_provider_phone(
-                                st.session_state.current_user
-                            )
-
-                            if patient_phone:
-
-                                if send_sms(
-                                    patient_phone,
-                                    f"You missed your {med} scheduled at {dose_time}."
-                                ):
-
-                                    log_sms(
-                                        st.session_state.current_user,
-                                        med,
-                                        dose_time,
-                                        "MISSED"
-                                    )
-
-                            if caregiver_phone:
-
-                                send_sms(
-                                    caregiver_phone,
-                                    f"{st.session_state.current_user} missed {med}."
-                                )
-
-                            if provider_phone:
-
-                                send_sms(
-                                    provider_phone,
-                                    f"{st.session_state.current_user} missed {med}."
-                                )
-
-                            st.session_state.sms_sent.add(sms_key)
-
                     elif current_time >= dose_datetime:
 
                         status = "pending"
@@ -1019,52 +968,6 @@ def dashboard():
                         status = "upcoming"  
                     
                     # ================= SMS REMINDER =================
-
-                    if (
-                        status == "pending"
-                        and current_time >= dose_datetime
-                        and current_time <= dose_datetime + timedelta(minutes=1)
-                    ):
-
-                        if not sms_already_sent(
-                            st.session_state.current_user,
-                            med,
-                            dose_time,
-                            "REMINDER"
-                        ):
-
-                            patient_phone = get_user_phone(
-                                st.session_state.current_user
-                            )
-
-                            caregiver_phone = get_caregiver_phone(
-                                st.session_state.current_user
-                            )
-
-                            message = (
-                                f"Reminder: Time to take {med} "
-                                f"scheduled at {dose_time}."
-                            )
-
-                            send_sms(
-                                patient_phone,
-                                message
-                            )
-
-                            if caregiver_phone:
-
-                                send_sms(
-                                    caregiver_phone,
-                                    f"{st.session_state.current_user} should now take {med}."
-                                )
-
-                            log_sms(
-                                st.session_state.current_user,
-                                med,
-                                dose_time,
-                                "REMINDER"
-                            )
-
                     with st.container(border=True):
                         show_buttons = (
                             status == "pending"
@@ -1271,10 +1174,12 @@ def dashboard():
                                             dose_time
                                         )
 
+
                                         next_time = (
                                             datetime.now(PH_TIMEZONE) +
                                             timedelta(minutes=5)
                                         ).strftime("%I:%M %p")
+
 
                                         set_next_alarm(
                                             st.session_state.current_user,
@@ -1282,6 +1187,67 @@ def dashboard():
                                             dose_time,
                                             next_time
                                         )
+
+
+                                        # ================= SMS SNOOZE =================
+
+                                        if not sms_already_sent(
+                                            st.session_state.current_user,
+                                            med,
+                                            dose_time,
+                                            "SNOOZE"
+                                        ):
+
+                                            patient_phone = get_user_phone(
+                                                st.session_state.current_user
+                                            )
+
+                                            caregiver_phone = get_caregiver_phone(
+                                                st.session_state.current_user
+                                            )
+
+
+                                            message_patient = (
+                                                f"Medication reminder snoozed.\n\n"
+                                                f"Medicine: {med}\n"
+                                                f"New reminder time: {next_time}"
+                                            )
+
+
+                                            message_caregiver = (
+                                                f"{st.session_state.current_user} "
+                                                f"snoozed {med}.\n"
+                                                f"New reminder time: {next_time}"
+                                            )
+
+
+                                            if patient_phone:
+
+                                                if send_sms(
+                                                    patient_phone,
+                                                    message_patient
+                                                ):
+
+                                                    log_sms(
+                                                        st.session_state.current_user,
+                                                        med,
+                                                        dose_time,
+                                                        "SNOOZE"
+                                                    )
+
+
+                                            if caregiver_phone:
+
+                                                send_sms(
+                                                    caregiver_phone,
+                                                    message_caregiver
+                                                )
+
+
+                                        st.success(
+                                            f"😴 Reminder snoozed until {next_time}"
+                                        )
+
 
                                         st.rerun()
 
